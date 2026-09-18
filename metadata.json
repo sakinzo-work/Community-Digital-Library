@@ -1,0 +1,6 @@
+{
+  "name": "Community Digital Library",
+  "description": "Explore our digital collection of books and read them anytime from anywhere. Knowledge for Everyone.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
