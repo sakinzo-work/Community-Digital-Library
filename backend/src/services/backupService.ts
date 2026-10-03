@@ -1,10 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { DatabaseSync } from 'node:sqlite';
-import { ZipArchive } from 'archiver';
-import { getDb, closeDb, resetDb, DB_PATH } from '../database/db';
-import { syncFilesOnStartup } from './fileStorage';
+import type { Archiver } from 'archiver';
+import {
+  queryAll,
+  queryOne,
+  withTransaction
+} from '../database/db';
 
 export interface TableCounts {
   categories: number;
@@ -24,7 +26,7 @@ export interface BackupManifest {
   appName: string;
   exportedAt: string;
   database: {
-    format: 'sqlite3';
+    format: 'postgresql';
     sha256: string;
     counts: TableCounts;
   };
@@ -62,233 +64,556 @@ const REQUIRED_TABLES = [
   'notifications'
 ] as const;
 
-/**
- * Generate a cryptographically strong unique temporary directory path.
- */
+type BackupTableName = (typeof REQUIRED_TABLES)[number];
+
+interface BackupDatabase {
+  categories: any[];
+  books: any[];
+  users: any[];
+  uploaded_files: any[];
+  borrowings: any[];
+  reservations: any[];
+  bookmarks: any[];
+  reading_progress: any[];
+  reviews: any[];
+  notifications: any[];
+}
+
 function createTempDir(prefix: string): string {
   const rand = crypto.randomBytes(8).toString('hex');
-  const tempPath = path.join('/tmp', `${prefix}_${Date.now()}_${rand}`);
+
+  const tempPath = path.join(
+    process.cwd(),
+    'database',
+    'tmp',
+    `${prefix}_${Date.now()}_${rand}`
+  );
+
   fs.mkdirSync(tempPath, { recursive: true });
+
   return tempPath;
 }
 
-/**
- * Safely clean up a temporary directory without affecting any application directories.
- */
 async function cleanupDirectory(dirPath: string): Promise<void> {
   try {
-    if (dirPath && dirPath.startsWith('/tmp') && fs.existsSync(dirPath)) {
-      await fs.promises.rm(dirPath, { recursive: true, force: true });
+    if (
+      dirPath &&
+      dirPath.includes(`${path.sep}database${path.sep}tmp${path.sep}`) &&
+      fs.existsSync(dirPath)
+    ) {
+      await fs.promises.rm(dirPath, {
+        recursive: true,
+        force: true
+      });
     }
   } catch (err) {
-    console.warn(`[BackupService] Warning: Failed to clean up temporary directory "${dirPath}":`, err);
+    console.warn(
+      `[BackupService] Failed to clean temporary directory "${dirPath}":`,
+      err
+    );
   }
 }
 
-/**
- * Compute SHA-256 hash of a file.
- */
 async function computeFileSha256(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
+
     const stream = fs.createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('end', () => resolve(hash.digest('hex')));
+
+    stream.on('data', (chunk) => {
+      hash.update(chunk);
+    });
+
+    stream.on('end', () => {
+      resolve(hash.digest('hex'));
+    });
+
     stream.on('error', reject);
   });
 }
 
-/**
- * PART 1 & 5: Create a complete, consistent Library Backup Archive (.zip).
- *
- * Uses SQLite's native `VACUUM INTO` to produce a completely consistent snapshot
- * that merges all uncheckpointed WAL pages into a standalone, pristine SQLite file.
- * Streams database.sqlite3, manifest.json, and uploads/ into a single ZIP archive.
- */
-export async function createBackupArchive(outputZipPath: string): Promise<{
+function countDatabaseRows(
+  database: BackupDatabase
+): TableCounts {
+  return {
+    categories: database.categories.length,
+    books: database.books.length,
+    users: database.users.length,
+    uploaded_files: database.uploaded_files.length,
+    borrowings: database.borrowings.length,
+    reservations: database.reservations.length,
+    bookmarks: database.bookmarks.length,
+    reading_progress: database.reading_progress.length,
+    reviews: database.reviews.length,
+    notifications: database.notifications.length
+  };
+}
+
+function serializeDatabaseValue(value: any): any {
+  if (Buffer.isBuffer(value)) {
+    return {
+      __type: 'Buffer',
+      base64: value.toString('base64')
+    };
+  }
+
+  if (value instanceof Date) {
+    return {
+      __type: 'Date',
+      value: value.toISOString()
+    };
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(serializeDatabaseValue);
+  }
+
+  if (
+    value !== null &&
+    typeof value === 'object'
+  ) {
+    const result: Record<string, any> = {};
+
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = serializeDatabaseValue(item);
+    }
+
+    return result;
+  }
+
+  return value;
+}
+
+function deserializeDatabaseValue(value: any): any {
+  if (
+    value &&
+    typeof value === 'object' &&
+    value.__type === 'Buffer'
+  ) {
+    return Buffer.from(value.base64, 'base64');
+  }
+
+  if (
+    value &&
+    typeof value === 'object' &&
+    value.__type === 'Date'
+  ) {
+    return new Date(value.value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(deserializeDatabaseValue);
+  }
+
+  if (
+    value !== null &&
+    typeof value === 'object'
+  ) {
+    const result: Record<string, any> = {};
+
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = deserializeDatabaseValue(item);
+    }
+
+    return result;
+  }
+
+  return value;
+}
+
+async function loadCurrentDatabase(): Promise<BackupDatabase> {
+  const database: BackupDatabase = {
+    categories: await queryAll(
+      'SELECT * FROM categories ORDER BY id'
+    ),
+
+    books: await queryAll(
+      'SELECT * FROM books ORDER BY id'
+    ),
+
+    users: await queryAll(
+      'SELECT * FROM users ORDER BY id'
+    ),
+
+    uploaded_files: await queryAll(
+      'SELECT * FROM uploaded_files ORDER BY filename'
+    ),
+
+    borrowings: await queryAll(
+      'SELECT * FROM borrowings ORDER BY id'
+    ),
+
+    reservations: await queryAll(
+      'SELECT * FROM reservations ORDER BY id'
+    ),
+
+    bookmarks: await queryAll(
+      'SELECT * FROM bookmarks ORDER BY id'
+    ),
+
+    reading_progress: await queryAll(
+      'SELECT * FROM reading_progress ORDER BY id'
+    ),
+
+    reviews: await queryAll(
+      'SELECT * FROM reviews ORDER BY id'
+    ),
+
+    notifications: await queryAll(
+      'SELECT * FROM notifications ORDER BY id'
+    )
+  };
+
+  return database;
+}
+
+function getDatabaseSha256(
+  database: BackupDatabase
+): string {
+  const serialized = JSON.stringify(
+    serializeDatabaseValue(database)
+  );
+
+  return crypto
+    .createHash('sha256')
+    .update(serialized, 'utf8')
+    .digest('hex');
+}
+
+async function inspectUploads(): Promise<{
+  pdfFiles: string[];
+  coverFiles: string[];
+  pdfCount: number;
+  coverCount: number;
+  totalBytes: number;
+}> {
+  const uploadsDir = path.join(
+    process.cwd(),
+    'uploads'
+  );
+
+  const pdfsDir = path.join(
+    uploadsDir,
+    'pdfs'
+  );
+
+  const coversDir = path.join(
+    uploadsDir,
+    'covers'
+  );
+
+  const pdfFiles: string[] = [];
+  const coverFiles: string[] = [];
+
+  let pdfCount = 0;
+  let coverCount = 0;
+  let totalBytes = 0;
+
+  if (fs.existsSync(pdfsDir)) {
+    const files = await fs.promises.readdir(pdfsDir);
+
+    for (const file of files) {
+      const filePath = path.join(
+        pdfsDir,
+        file
+      );
+
+      const stat = await fs.promises.stat(
+        filePath
+      );
+
+      if (
+        stat.isFile() &&
+        file.toLowerCase().endsWith('.pdf')
+      ) {
+        pdfFiles.push(file);
+        pdfCount++;
+        totalBytes += stat.size;
+      }
+    }
+  }
+
+  if (fs.existsSync(coversDir)) {
+    const files = await fs.promises.readdir(coversDir);
+
+    for (const file of files) {
+      const filePath = path.join(
+        coversDir,
+        file
+      );
+
+      const stat = await fs.promises.stat(
+        filePath
+      );
+
+      if (stat.isFile()) {
+        coverFiles.push(file);
+        coverCount++;
+        totalBytes += stat.size;
+      }
+    }
+  }
+
+  return {
+    pdfFiles,
+    coverFiles,
+    pdfCount,
+    coverCount,
+    totalBytes
+  };
+}
+
+export async function createBackupArchive(
+  outputZipPath: string
+): Promise<{
   manifest: BackupManifest;
   archivePath: string;
 }> {
-  const stagingDir = createTempDir('cdl_export');
-  const snapshotDbPath = path.join(stagingDir, 'database.sqlite3');
+  const stagingDir = createTempDir(
+    'cdl_export'
+  );
 
   try {
-    // 1. Create a consistent SQLite snapshot via native VACUUM INTO
-    const liveDb = getDb();
-    liveDb.exec(`VACUUM INTO '${snapshotDbPath}';`);
+    const database =
+      await loadCurrentDatabase();
 
-    // Verify snapshot integrity and foreign keys in isolated read-only mode
-    const snapshotDb = new DatabaseSync(snapshotDbPath, { readOnly: true });
-    try {
-      const integrityRow = snapshotDb.prepare('PRAGMA integrity_check;').get() as any;
-      if (!integrityRow || integrityRow.integrity_check !== 'ok') {
-        throw new Error(`Export snapshot failed integrity check: ${JSON.stringify(integrityRow)}`);
-      }
-      const fkRows = snapshotDb.prepare('PRAGMA foreign_key_check;').all();
-      if (fkRows.length > 0) {
-        throw new Error(`Export snapshot contains foreign key violations: ${JSON.stringify(fkRows)}`);
-      }
+    const databasePayload =
+      serializeDatabaseValue(database);
 
-      // 2. Collect exact row counts for all 10 tables from the snapshot
-      const counts: TableCounts = {
-        categories: 0,
-        books: 0,
-        users: 0,
-        uploaded_files: 0,
-        borrowings: 0,
-        reservations: 0,
-        bookmarks: 0,
-        reading_progress: 0,
-        reviews: 0,
-        notifications: 0
+    const databaseJsonPath = path.join(
+      stagingDir,
+      'database.json'
+    );
+
+    await fs.promises.writeFile(
+      databaseJsonPath,
+      JSON.stringify(
+        databasePayload,
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const databaseSha256 =
+      await computeFileSha256(
+        databaseJsonPath
+      );
+
+    const uploads =
+      await inspectUploads();
+
+    const counts =
+      countDatabaseRows(database);
+
+    const databaseBytes = (
+      await fs.promises.stat(
+        databaseJsonPath
+      )
+    ).size;
+
+    const manifest: BackupManifest = {
+      backupVersion: '2.0',
+      appName: 'Community Digital Library',
+      exportedAt: new Date().toISOString(),
+
+      database: {
+        format: 'postgresql',
+        sha256: databaseSha256,
+        counts
+      },
+
+      assets: {
+        pdfCount: uploads.pdfCount,
+        coverCount: uploads.coverCount,
+        totalBytes:
+          databaseBytes +
+          uploads.totalBytes
+      }
+    };
+
+    const manifestPath = path.join(
+      stagingDir,
+      'manifest.json'
+    );
+
+    await fs.promises.writeFile(
+      manifestPath,
+      JSON.stringify(
+        manifest,
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    type ArchiverFactory = (
+      format: 'zip',
+      options: {
+        zlib: {
+          level: number;
+        };
+      }
+    ) => Archiver;
+
+    const { default: createArchiver } =
+      (await import('archiver')) as unknown as {
+        default: ArchiverFactory;
       };
 
-      for (const table of REQUIRED_TABLES) {
-        const row = snapshotDb.prepare(`SELECT COUNT(*) as cnt FROM ${table};`).get() as any;
-        counts[table] = row ? Number(row.cnt || 0) : 0;
-      }
+    await new Promise<void>(
+      (resolve, reject) => {
+        const outputStream =
+          fs.createWriteStream(
+            outputZipPath
+          );
 
-      // Compute SHA-256 of the snapshot database
-      const dbSha256 = await computeFileSha256(snapshotDbPath);
-
-      // 3. Inspect existing filesystem uploads without modifying them
-      const uploadsDir = path.join(process.cwd(), 'uploads');
-      const pdfsDir = path.join(uploadsDir, 'pdfs');
-      const coversDir = path.join(uploadsDir, 'covers');
-
-      let pdfCount = 0;
-      let coverCount = 0;
-      let totalBytes = fs.statSync(snapshotDbPath).size;
-
-      const pdfFiles: string[] = [];
-      if (fs.existsSync(pdfsDir)) {
-        const files = await fs.promises.readdir(pdfsDir);
-        for (const file of files) {
-          const filePath = path.join(pdfsDir, file);
-          const stat = await fs.promises.stat(filePath);
-          if (stat.isFile() && file.toLowerCase().endsWith('.pdf')) {
-            pdfCount++;
-            totalBytes += stat.size;
-            pdfFiles.push(file);
+        const zip = createArchiver(
+          'zip',
+          {
+            zlib: {
+              level: 6
+            }
           }
-        }
-      }
+        );
 
-      const coverFiles: string[] = [];
-      if (fs.existsSync(coversDir)) {
-        const files = await fs.promises.readdir(coversDir);
-        for (const file of files) {
-          const filePath = path.join(coversDir, file);
-          const stat = await fs.promises.stat(filePath);
-          if (stat.isFile()) {
-            coverCount++;
-            totalBytes += stat.size;
-            coverFiles.push(file);
-          }
-        }
-      }
+        outputStream.on(
+          'close',
+          () => resolve()
+        );
 
-      // 4. Build manifest.json
-      const manifest: BackupManifest = {
-        backupVersion: '1.0',
-        appName: 'Community Digital Library',
-        exportedAt: new Date().toISOString(),
-        database: {
-          format: 'sqlite3',
-          sha256: dbSha256,
-          counts
-        },
-        assets: {
-          pdfCount,
-          coverCount,
-          totalBytes
-        }
-      };
+        outputStream.on(
+          'error',
+          reject
+        );
 
-      const manifestPath = path.join(stagingDir, 'manifest.json');
-      await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-
-      // 5. Assemble ZIP archive via streaming
-      await new Promise<void>((resolve, reject) => {
-        const outputStream = fs.createWriteStream(outputZipPath);
-        const zip = new ZipArchive({ zlib: { level: 6 } });
-
-        outputStream.on('close', () => resolve());
-        zip.on('error', (err) => reject(err));
+        zip.on(
+          'error',
+          reject
+        );
 
         zip.pipe(outputStream);
 
-        // Append manifest.json
-        zip.file(manifestPath, { name: 'manifest.json' });
+        zip.file(
+          manifestPath,
+          {
+            name: 'manifest.json'
+          }
+        );
 
-        // Append database.sqlite3
-        zip.file(snapshotDbPath, { name: 'database.sqlite3' });
+        zip.file(
+          databaseJsonPath,
+          {
+            name: 'database.json'
+          }
+        );
 
-        // Append PDF files
-        for (const pdf of pdfFiles) {
-          zip.file(path.join(pdfsDir, pdf), { name: `uploads/pdfs/${pdf}` });
+        for (
+          const pdf of uploads.pdfFiles
+        ) {
+          zip.file(
+            path.join(
+              process.cwd(),
+              'uploads',
+              'pdfs',
+              pdf
+            ),
+            {
+              name:
+                `uploads/pdfs/${pdf}`
+            }
+          );
         }
 
-        // Append cover files
-        for (const cover of coverFiles) {
-          zip.file(path.join(coversDir, cover), { name: `uploads/covers/${cover}` });
+        for (
+          const cover of uploads.coverFiles
+        ) {
+          zip.file(
+            path.join(
+              process.cwd(),
+              'uploads',
+              'covers',
+              cover
+            ),
+            {
+              name:
+                `uploads/covers/${cover}`
+            }
+          );
         }
 
-        zip.finalize().catch(reject);
-      });
+        void zip.finalize();
+      }
+    );
 
-      return { manifest, archivePath: outputZipPath };
-    } finally {
-      snapshotDb.close();
-    }
+    return {
+      manifest,
+      archivePath: outputZipPath
+    };
   } finally {
-    await cleanupDirectory(stagingDir);
+    await cleanupDirectory(
+      stagingDir
+    );
   }
 }
 
-/**
- * Validate that an archive entry relative path does not escape the staging directory.
- * Evaluates both POSIX (/) and Windows (\) separators across all runtimes.
- */
-export function isSafeArchivePath(entryPath: string): boolean {
-  // 1. Reject empty, non-string, or blank paths
-  if (!entryPath || typeof entryPath !== 'string' || entryPath.trim().length === 0) {
+export function isSafeArchivePath(
+  entryPath: string
+): boolean {
+  if (
+    !entryPath ||
+    typeof entryPath !== 'string' ||
+    entryPath.trim().length === 0
+  ) {
     return false;
   }
 
-  // 2. Reject paths starting with / or \ (Unix absolute, Windows-rooted, or UNC)
-  if (entryPath.startsWith('/') || entryPath.startsWith('\\')) {
+  if (
+    entryPath.startsWith('/') ||
+    entryPath.startsWith('\\')
+  ) {
     return false;
   }
 
-  // 3. Reject Windows drive-letter paths (e.g., C:\..., C:/...)
-  if (/^[a-zA-Z]:[\\/]/.test(entryPath) || /^[a-zA-Z]:$/.test(entryPath)) {
+  if (
+    /^[a-zA-Z]:[\\/]/.test(entryPath) ||
+    /^[a-zA-Z]:$/.test(entryPath)
+  ) {
     return false;
   }
 
-  // 4. Reject null bytes and illegal control characters
-  if (/[\x00-\x1f\x7f]/.test(entryPath)) {
+  if (
+    /[\x00-\x1f\x7f]/.test(entryPath)
+  ) {
     return false;
   }
 
-  // 5. Inspect the ORIGINAL raw path segments BEFORE any normalization.
-  // Treats both '/' and '\' as path separators so that traversal cannot be masked.
-  const rawSegments = entryPath.split(/[/\\]+/);
-  for (const segment of rawSegments) {
+  const rawSegments =
+    entryPath.split(/[\\/]+/);
+
+  for (
+    const segment of rawSegments
+  ) {
     if (segment === '..') {
       return false;
     }
   }
 
-  // 6. Cross-platform normalization check:
-  // Convert all backslashes to forward slashes and ensure normalized relative path does not escape
-  const posixPath = entryPath.replace(/\\/g, '/');
-  const normalized = path.posix.normalize(posixPath);
+  const posixPath =
+    entryPath.replace(/\\/g, '/');
+
+  const normalized =
+    path.posix.normalize(
+      posixPath
+    );
+
   if (
     normalized.startsWith('../') ||
     normalized === '..' ||
     normalized.includes('/../') ||
-    path.isAbsolute(normalized)
+    path.posix.isAbsolute(
+      normalized
+    )
   ) {
     return false;
   }
@@ -296,253 +621,469 @@ export function isSafeArchivePath(entryPath: string): boolean {
   return true;
 }
 
-/**
- * PART 6, 7 & 8: Validate a staged backup directory BEFORE mutating any live state.
- *
- * Implements the comprehensive 21-point verification plan.
- */
-export async function validateStagedBackup(stagedDir: string): Promise<ValidationResult> {
+async function readManifest(
+  stagedDir: string
+): Promise<BackupManifest> {
+  const manifestPath =
+    path.join(
+      stagedDir,
+      'manifest.json'
+    );
+
+  if (
+    !fs.existsSync(manifestPath)
+  ) {
+    throw new Error(
+      'Archive is missing "manifest.json".'
+    );
+  }
+
+  const raw =
+    await fs.promises.readFile(
+      manifestPath,
+      'utf8'
+    );
+
+  const manifest =
+    JSON.parse(raw);
+
+  if (
+    !manifest ||
+    typeof manifest !== 'object'
+  ) {
+    throw new Error(
+      'Invalid backup manifest.'
+    );
+  }
+
+  return manifest as BackupManifest;
+}
+
+async function readStagedDatabase(
+  stagedDir: string
+): Promise<BackupDatabase> {
+  const databasePath =
+    path.join(
+      stagedDir,
+      'database.json'
+    );
+
+  if (
+    !fs.existsSync(databasePath)
+  ) {
+    throw new Error(
+      'Archive is missing "database.json".'
+    );
+  }
+
+  const raw =
+    await fs.promises.readFile(
+      databasePath,
+      'utf8'
+    );
+
+  const parsed =
+    JSON.parse(raw);
+
+  return deserializeDatabaseValue(
+    parsed
+  ) as BackupDatabase;
+}
+
+function validateRequiredTables(
+  database: any
+): string[] {
   const errors: string[] = [];
-  const warnings: string[] = [];
 
-  // 1. Check manifest.json exists
-  const manifestPath = path.join(stagedDir, 'manifest.json');
-  if (!fs.existsSync(manifestPath)) {
-    errors.push('Archive is missing "manifest.json" at root.');
-    return { valid: false, errors, warnings };
-  }
-
-  // 2 & 3 & 4. Validate manifest JSON structure
-  let manifest: BackupManifest;
-  try {
-    const raw = await fs.promises.readFile(manifestPath, 'utf8');
-    manifest = JSON.parse(raw);
-  } catch (err: any) {
-    errors.push(`"manifest.json" is not valid JSON: ${err.message}`);
-    return { valid: false, errors, warnings };
-  }
-
-  if (!manifest.backupVersion) {
-    errors.push('Manifest missing required field: "backupVersion".');
-  }
-  if (!manifest.exportedAt) {
-    errors.push('Manifest missing required field: "exportedAt".');
-  }
-  if (!manifest.database || !manifest.database.counts) {
-    errors.push('Manifest missing database metadata or table counts.');
-  }
-
-  // 5 & 6. Check database.sqlite3
-  const dbPath = path.join(stagedDir, 'database.sqlite3');
-  if (!fs.existsSync(dbPath)) {
-    errors.push('Archive is missing "database.sqlite3" at root.');
-    return { valid: false, manifest, errors, warnings };
-  }
-
-  const dbStat = await fs.promises.stat(dbPath);
-  if (dbStat.size === 0) {
-    errors.push('Archive "database.sqlite3" is an empty (0-byte) file.');
-    return { valid: false, manifest, errors, warnings };
-  }
-
-  // 13. Verify SHA-256 hash if present in manifest
-  if (manifest.database?.sha256) {
-    const actualHash = await computeFileSha256(dbPath);
-    if (actualHash !== manifest.database.sha256) {
+  for (
+    const table of REQUIRED_TABLES
+  ) {
+    if (
+      !Array.isArray(
+        database?.[table]
+      )
+    ) {
       errors.push(
-        `Database SHA-256 checksum mismatch. Expected "${manifest.database.sha256}", got "${actualHash}".`
+        `Database backup is missing table data for "${table}".`
       );
     }
   }
 
-  // 7, 8, 9, 10, 11, 12. Open database and inspect tables & relationships
-  let stagedDb: DatabaseSync | null = null;
-  try {
-    stagedDb = new DatabaseSync(dbPath, { readOnly: true });
+  return errors;
+}
 
-    // PRAGMA integrity_check
-    const integrity = stagedDb.prepare('PRAGMA integrity_check;').get() as any;
-    if (!integrity || integrity.integrity_check !== 'ok') {
-      errors.push(`SQLite database failed integrity check: ${JSON.stringify(integrity)}`);
-    }
+function validateRelationships(
+  database: BackupDatabase
+): string[] {
+  const errors: string[] = [];
 
-    // PRAGMA foreign_key_check
-    const fkErrors = stagedDb.prepare('PRAGMA foreign_key_check;').all();
-    if (fkErrors.length > 0) {
-      errors.push(`SQLite foreign key violations detected in staged database: ${fkErrors.length} invalid references.`);
-    }
-
-    // Check all 10 required tables exist
-    const existingTables = (
-      stagedDb
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
-        .all() as any[]
-    ).map((t) => t.name);
-
-    for (const table of REQUIRED_TABLES) {
-      if (!existingTables.includes(table)) {
-        errors.push(`Database missing required application table: "${table}".`);
-      }
-    }
-
-    // If tables are missing, stop further structural checks
-    if (errors.length > 0) {
-      return { valid: false, manifest, errors, warnings };
-    }
-
-    // Verify critical columns exist in books and users
-    const bookCols = (stagedDb.prepare('PRAGMA table_info(books);').all() as any[]).map((c) => c.name);
-    for (const col of ['id', 'title', 'category_id', 'pdf_path', 'cover_path']) {
-      if (!bookCols.includes(col)) {
-        errors.push(`"books" table missing essential column: "${col}".`);
-      }
-    }
-
-    const userCols = (stagedDb.prepare('PRAGMA table_info(users);').all() as any[]).map((c) => c.name);
-    for (const col of ['id', 'email', 'password_hash', 'role']) {
-      if (!userCols.includes(col)) {
-        errors.push(`"users" table missing essential column: "${col}".`);
-      }
-    }
-
-    // Compare manifest table counts against actual counts
-    if (manifest.database?.counts) {
-      for (const table of REQUIRED_TABLES) {
-        const row = stagedDb.prepare(`SELECT COUNT(*) as cnt FROM ${table};`).get() as any;
-        const actualCount = row ? Number(row.cnt || 0) : 0;
-        const expectedCount = manifest.database.counts[table];
-        if (expectedCount !== undefined && expectedCount !== actualCount) {
-          warnings.push(
-            `Table "${table}" row count mismatch: manifest declared ${expectedCount}, database contains ${actualCount}.`
-          );
-        }
-      }
-    }
-
-    // Deep relationship validation:
-    // 1. books -> categories
-    const orphanedBooks = stagedDb
-      .prepare(
-        'SELECT id, title, category_id FROM books WHERE category_id NOT IN (SELECT id FROM categories);'
+  const categoryIds =
+    new Set(
+      database.categories.map(
+        (row) => row.id
       )
-      .all() as any[];
-    if (orphanedBooks.length > 0) {
-      errors.push(`Found ${orphanedBooks.length} books with invalid category references.`);
-    }
+    );
 
-    // 2. Child tables -> books & users
-    for (const child of ['borrowings', 'reservations', 'bookmarks', 'reading_progress', 'reviews']) {
-      const orphanedUsers = stagedDb
-        .prepare(`SELECT id FROM ${child} WHERE user_id NOT IN (SELECT id FROM users);`)
-        .all();
-      if (orphanedUsers.length > 0) {
-        errors.push(`Found ${orphanedUsers.length} records in "${child}" referencing non-existent users.`);
-      }
-      const orphanedBookRefs = stagedDb
-        .prepare(`SELECT id FROM ${child} WHERE book_id NOT IN (SELECT id FROM books);`)
-        .all();
-      if (orphanedBookRefs.length > 0) {
-        errors.push(`Found ${orphanedBookRefs.length} records in "${child}" referencing non-existent books.`);
-      }
-    }
-
-    // Notifications -> users
-    const orphanedNotifications = stagedDb
-      .prepare('SELECT id FROM notifications WHERE user_id NOT IN (SELECT id FROM users);')
-      .all();
-    if (orphanedNotifications.length > 0) {
-      errors.push(`Found ${orphanedNotifications.length} notifications referencing non-existent users.`);
-    }
-
-    // 14 & 15. PDF Validation
-    const booksWithPdf = stagedDb
-      .prepare("SELECT id, title, pdf_path FROM books WHERE pdf_path IS NOT NULL AND TRIM(pdf_path) != '';")
-      .all() as any[];
-
-    for (const b of booksWithPdf) {
-      const rawPdfPath: string = b.pdf_path;
-      if (!isSafeArchivePath(rawPdfPath.replace(/^\//, ''))) {
-        errors.push(`Book "${b.title}" contains an unsafe pdf_path: "${rawPdfPath}".`);
-        continue;
-      }
-
-      const relativeFile = rawPdfPath.replace(/^\/?uploads\//, '');
-      const stagedPdfPath = path.join(stagedDir, 'uploads', relativeFile);
-
-      // Check if file exists on disk in staged uploads OR in uploaded_files BLOB
-      let hasFile = fs.existsSync(stagedPdfPath);
-      let buffer: Buffer | null = null;
-
-      if (hasFile) {
-        const stat = await fs.promises.stat(stagedPdfPath);
-        if (stat.size > 0) {
-          const fd = await fs.promises.open(stagedPdfPath, 'r');
-          const headBuf = Buffer.alloc(5);
-          await fd.read(headBuf, 0, 5, 0);
-          await fd.close();
-          buffer = headBuf;
-        }
-      } else {
-        // Check if backed up as BLOB in staged uploaded_files table
-        const filename = path.basename(rawPdfPath);
-        const blobRow = stagedDb
-          .prepare('SELECT data FROM uploaded_files WHERE filename = ? OR file_path = ?;')
-          .get(filename, rawPdfPath) as any;
-        if (blobRow && blobRow.data && Buffer.isBuffer(blobRow.data) && blobRow.data.length >= 5) {
-          hasFile = true;
-          buffer = blobRow.data.subarray(0, 5);
-        }
-      }
-
-      if (!hasFile || !buffer) {
-        errors.push(`Referenced PDF for book "${b.title}" (${rawPdfPath}) is missing from archive and BLOB table.`);
-      } else {
-        const magic = buffer.toString('utf8', 0, 5);
-        if (magic !== '%PDF-') {
-          errors.push(`File "${rawPdfPath}" for book "${b.title}" is not a valid PDF (invalid magic header: "${magic}").`);
-        }
-      }
-    }
-
-    // 16. Cover Validation
-    const booksWithLocalCover = stagedDb
-      .prepare(
-        "SELECT id, title, cover_path FROM books WHERE cover_path LIKE '/uploads/covers/%' OR cover_path LIKE 'uploads/covers/%';"
+  const userIds =
+    new Set(
+      database.users.map(
+        (row) => row.id
       )
-      .all() as any[];
+    );
 
-    for (const b of booksWithLocalCover) {
-      const rawCover: string = b.cover_path;
-      if (!isSafeArchivePath(rawCover.replace(/^\//, ''))) {
-        errors.push(`Book "${b.title}" contains an unsafe cover_path: "${rawCover}".`);
-        continue;
-      }
-      const relativeCover = rawCover.replace(/^\/?uploads\//, '');
-      const stagedCoverPath = path.join(stagedDir, 'uploads', relativeCover);
-      if (!fs.existsSync(stagedCoverPath)) {
-        warnings.push(`Local cover image for "${b.title}" (${rawCover}) was not found in the archive.`);
-      }
-    }
-  } catch (err: any) {
-    errors.push(`Error inspecting staged SQLite database: ${err.message}`);
-  } finally {
-    if (stagedDb) {
-      stagedDb.close();
+  const bookIds =
+    new Set(
+      database.books.map(
+        (row) => row.id
+      )
+    );
+
+  for (
+    const book of database.books
+  ) {
+    if (
+      !categoryIds.has(
+        book.category_id
+      )
+    ) {
+      errors.push(
+        `Book "${book.id}" references missing category "${book.category_id}".`
+      );
     }
   }
 
+  const childTables = [
+    'borrowings',
+    'reservations',
+    'bookmarks',
+    'reading_progress',
+    'reviews'
+  ] as const;
+
+  for (
+    const table of childTables
+  ) {
+    for (
+      const row of database[table]
+    ) {
+      if (
+        !userIds.has(row.user_id)
+      ) {
+        errors.push(
+          `Table "${table}" record "${row.id}" references missing user "${row.user_id}".`
+        );
+      }
+
+      if (
+        !bookIds.has(row.book_id)
+      ) {
+        errors.push(
+          `Table "${table}" record "${row.id}" references missing book "${row.book_id}".`
+        );
+      }
+    }
+  }
+
+  for (
+    const row of database.notifications
+  ) {
+    if (
+      !userIds.has(row.user_id)
+    ) {
+      errors.push(
+        `Notification "${row.id}" references missing user "${row.user_id}".`
+      );
+    }
+  }
+
+  return errors;
+}
+
+function validatePdfFiles(
+  database: BackupDatabase,
+  stagedDir: string,
+  errors: string[]
+): void {
+  for (
+    const book of database.books
+  ) {
+    if (
+      !book.pdf_path ||
+      String(book.pdf_path).trim() === ''
+    ) {
+      continue;
+    }
+
+    const rawPdfPath =
+      String(book.pdf_path);
+
+    const filename =
+      path.basename(
+        rawPdfPath
+      );
+
+    if (
+      !isSafeArchivePath(filename)
+    ) {
+      errors.push(
+        `Book "${book.title}" contains an unsafe PDF filename.`
+      );
+
+      continue;
+    }
+
+    const stagedPdfPath =
+      path.join(
+        stagedDir,
+        'uploads',
+        'pdfs',
+        filename
+      );
+
+    if (
+      !fs.existsSync(
+        stagedPdfPath
+      )
+    ) {
+      continue;
+    }
+
+    try {
+      const fd =
+        fs.openSync(
+          stagedPdfPath,
+          'r'
+        );
+
+      const header =
+        Buffer.alloc(5);
+
+      fs.readSync(
+        fd,
+        header,
+        0,
+        5,
+        0
+      );
+
+      fs.closeSync(fd);
+
+      if (
+        header.toString(
+          'utf8'
+        ) !== '%PDF-'
+      ) {
+        errors.push(
+          `PDF "${filename}" for book "${book.title}" has an invalid PDF header.`
+        );
+      }
+    } catch (error: any) {
+      errors.push(
+        `Could not inspect PDF "${filename}": ${error.message}`
+      );
+    }
+  }
+}
+
+export async function validateStagedBackup(
+  stagedDir: string
+): Promise<ValidationResult> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  let manifest: BackupManifest;
+
+  try {
+    manifest =
+      await readManifest(
+        stagedDir
+      );
+  } catch (error: any) {
+    errors.push(
+      error.message
+    );
+
+    return {
+      valid: false,
+      errors,
+      warnings
+    };
+  }
+
+  if (
+    !manifest.backupVersion
+  ) {
+    errors.push(
+      'Manifest is missing backupVersion.'
+    );
+  }
+
+  if (
+    !manifest.exportedAt
+  ) {
+    errors.push(
+      'Manifest is missing exportedAt.'
+    );
+  }
+
+  if (
+    !manifest.database
+  ) {
+    errors.push(
+      'Manifest is missing database metadata.'
+    );
+  }
+
+  if (
+    manifest.database &&
+    manifest.database.format !== 'postgresql'
+  ) {
+    errors.push(
+      `Unsupported backup database format "${manifest.database.format}". Expected "postgresql".`
+    );
+  }
+
+  let database: BackupDatabase;
+
+  try {
+    database =
+      await readStagedDatabase(
+        stagedDir
+      );
+  } catch (error: any) {
+    errors.push(
+      error.message
+    );
+
+    return {
+      valid: false,
+      manifest,
+      errors,
+      warnings
+    };
+  }
+
+  errors.push(
+    ...validateRequiredTables(
+      database
+    )
+  );
+
+  if (
+    errors.length > 0
+  ) {
+    return {
+      valid: false,
+      manifest,
+      errors,
+      warnings
+    };
+  }
+
+  const actualHash =
+    getDatabaseSha256(
+      database
+    );
+
+  if (
+    manifest.database?.sha256 &&
+    actualHash !==
+      manifest.database.sha256
+  ) {
+    errors.push(
+      `Database SHA-256 checksum mismatch. Expected "${manifest.database.sha256}", got "${actualHash}".`
+    );
+  }
+
+  const actualCounts =
+    countDatabaseRows(
+      database
+    );
+
+  if (
+    manifest.database?.counts
+  ) {
+    for (
+      const table of REQUIRED_TABLES
+    ) {
+      const expected =
+        manifest.database.counts[
+          table
+        ];
+
+      const actual =
+        actualCounts[
+          table
+        ];
+
+      if (
+        expected !== actual
+      ) {
+        warnings.push(
+          `Table "${table}" count differs from manifest: manifest=${expected}, backup=${actual}.`
+        );
+      }
+    }
+  }
+
+  errors.push(
+    ...validateRelationships(
+      database
+    )
+  );
+
+  validatePdfFiles(
+    database,
+    stagedDir,
+    errors
+  );
+
+  const uploadsDir =
+    path.join(
+      stagedDir,
+      'uploads'
+    );
+
+  if (
+    manifest.assets?.pdfCount >
+      0 &&
+    !fs.existsSync(
+      path.join(
+        uploadsDir,
+        'pdfs'
+      )
+    )
+  ) {
+    warnings.push(
+      'Manifest reports PDF files, but uploads/pdfs is missing from the archive.'
+    );
+  }
+
+  if (
+    manifest.assets?.coverCount >
+      0 &&
+    !fs.existsSync(
+      path.join(
+        uploadsDir,
+        'covers'
+      )
+    )
+  ) {
+    warnings.push(
+      'Manifest reports cover files, but uploads/covers is missing from the archive.'
+    );
+  }
+
   return {
-    valid: errors.length === 0,
+    valid:
+      errors.length === 0,
     manifest,
     errors,
     warnings
   };
 }
 
-/**
- * Dependency-safe deletion order: dependent child tables first.
- */
-const RESTORE_DELETE_ORDER = [
+const RESTORE_DELETE_ORDER: BackupTableName[] = [
   'notifications',
   'reviews',
   'reading_progress',
@@ -553,12 +1094,9 @@ const RESTORE_DELETE_ORDER = [
   'books',
   'categories',
   'users'
-] as const;
+];
 
-/**
- * Dependency-safe insertion order: independent parent tables first.
- */
-const RESTORE_INSERT_ORDER = [
+const RESTORE_INSERT_ORDER: BackupTableName[] = [
   'users',
   'categories',
   'books',
@@ -569,180 +1107,487 @@ const RESTORE_INSERT_ORDER = [
   'reading_progress',
   'reviews',
   'notifications'
-] as const;
+];
 
-/**
- * PART 9 & 10: Restore a validated staged backup to live application state.
- *
- * Implements an atomic SQLite logical restore using ATTACH DATABASE on the existing
- * live DatabaseSync connection. The live database file is NOT replaced, and the live
- * DatabaseSync connection remains open and functional throughout.
- *
- * Filesystem assets (uploads) are synchronized with full rollback protection.
- */
-export async function restoreValidatedBackup(stagedDir: string): Promise<RestoreResult> {
-  // Step 1: Pre-validation check
-  const validation = await validateStagedBackup(stagedDir);
-  if (!validation.valid) {
+const TABLE_COLUMNS: Record<
+  BackupTableName,
+  string[]
+> = {
+  users: [
+    'id',
+    'full_name',
+    'email',
+    'password_hash',
+    'phone',
+    'role',
+    'bio',
+    'interests',
+    'library_card_number',
+    'membership_type',
+    'created_at',
+    'updated_at'
+  ],
+
+  categories: [
+    'id',
+    'name',
+    'description',
+    'icon_name',
+    'created_at'
+  ],
+
+  books: [
+    'id',
+    'title',
+    'author',
+    'category_id',
+    'description',
+    'publication_year',
+    'pages',
+    'language',
+    'isbn',
+    'cover_path',
+    'pdf_path',
+    'is_available',
+    'publisher',
+    'featured',
+    'chapters_json',
+    'rating',
+    'reviews_count',
+    'created_at',
+    'updated_at'
+  ],
+
+  uploaded_files: [
+    'filename',
+    'file_path',
+    'mime_type',
+    'file_size',
+    'data',
+    'created_at'
+  ],
+
+  borrowings: [
+    'id',
+    'user_id',
+    'book_id',
+    'borrowed_at',
+    'due_date',
+    'returned_at',
+    'status'
+  ],
+
+  reservations: [
+    'id',
+    'user_id',
+    'book_id',
+    'reserved_at',
+    'status',
+    'queue_position',
+    'ready_at',
+    'expires_at'
+  ],
+
+  bookmarks: [
+    'id',
+    'user_id',
+    'book_id',
+    'created_at'
+  ],
+
+  reading_progress: [
+    'id',
+    'user_id',
+    'book_id',
+    'current_page',
+    'total_pages',
+    'progress_percentage',
+    'last_read_at'
+  ],
+
+  reviews: [
+    'id',
+    'user_id',
+    'book_id',
+    'rating',
+    'comment',
+    'created_at',
+    'updated_at'
+  ],
+
+  notifications: [
+    'id',
+    'user_id',
+    'title',
+    'message',
+    'type',
+    'link',
+    'is_read',
+    'created_at'
+  ]
+};
+
+async function verifyLiveSchema(): Promise<void> {
+  for (
+    const table of REQUIRED_TABLES
+  ) {
+    const rows =
+      await queryAll<{
+        column_name: string;
+      }>(
+        `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = ?
+        ORDER BY ordinal_position
+        `,
+        [table]
+      );
+
+    const actualColumns =
+      rows.map(
+        (row) =>
+          row.column_name
+      );
+
+    const expectedColumns =
+      TABLE_COLUMNS[table];
+
+    for (
+      const column of expectedColumns
+    ) {
+      if (
+        !actualColumns.includes(
+          column
+        )
+      ) {
+        throw new Error(
+          `PostgreSQL table "${table}" is missing required column "${column}".`
+        );
+      }
+    }
+  }
+}
+
+function buildInsertQuery(
+  table: BackupTableName,
+  row: Record<string, any>
+): {
+  sql: string;
+  values: any[];
+} {
+  const columns =
+    TABLE_COLUMNS[table].filter(
+      (column) =>
+        Object.prototype.hasOwnProperty.call(
+          row,
+          column
+        )
+    );
+
+  if (
+    columns.length === 0
+  ) {
+    throw new Error(
+      `Backup row for "${table}" contains no recognized columns.`
+    );
+  }
+
+  const placeholders =
+    columns.map(
+      () => '?'
+    );
+
+  const values =
+    columns.map(
+      (column) =>
+        row[column] === undefined
+          ? null
+          : row[column]
+    );
+
+  return {
+    sql: `
+      INSERT INTO ${table}
+      (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+    `,
+    values
+  };
+}
+
+async function replaceDatabase(
+  database: BackupDatabase
+): Promise<void> {
+  await verifyLiveSchema();
+
+  await withTransaction(
+    async ({
+      run
+    }) => {
+      for (
+        const table of RESTORE_DELETE_ORDER
+      ) {
+        await run(
+          `DELETE FROM ${table}`
+        );
+      }
+
+      for (
+        const table of RESTORE_INSERT_ORDER
+      ) {
+        for (
+          const rawRow of database[
+            table
+          ]
+        ) {
+          const row =
+            deserializeDatabaseValue(
+              rawRow
+            );
+
+          const insert =
+            buildInsertQuery(
+              table,
+              row
+            );
+
+          await run(
+            insert.sql,
+            insert.values
+          );
+        }
+      }
+
+      const integrity =
+        await queryOne<{
+          users: number;
+          categories: number;
+          books: number;
+        }>(
+          `
+          SELECT
+            (SELECT COUNT(*) FROM users) AS users,
+            (SELECT COUNT(*) FROM categories) AS categories,
+            (SELECT COUNT(*) FROM books) AS books
+          `
+        );
+
+      if (!integrity) {
+        throw new Error(
+          'PostgreSQL restore verification failed.'
+        );
+      }
+    }
+  );
+}
+
+async function backupLiveUploads(
+  rollbackUploadsDir: string
+): Promise<void> {
+  const liveUploadsDir =
+    path.join(
+      process.cwd(),
+      'uploads'
+    );
+
+  if (
+    !fs.existsSync(
+      liveUploadsDir
+    )
+  ) {
+    return;
+  }
+
+  await fs.promises.cp(
+    liveUploadsDir,
+    rollbackUploadsDir,
+    {
+      recursive: true
+    }
+  );
+}
+
+async function restoreUploads(
+  stagedDir: string
+): Promise<void> {
+  const stagedUploadsDir =
+    path.join(
+      stagedDir,
+      'uploads'
+    );
+
+  const liveUploadsDir =
+    path.join(
+      process.cwd(),
+      'uploads'
+    );
+
+  if (
+    !fs.existsSync(
+      stagedUploadsDir
+    )
+  ) {
+    return;
+  }
+
+  await fs.promises.rm(
+    liveUploadsDir,
+    {
+      recursive: true,
+      force: true
+    }
+  );
+
+  await fs.promises.cp(
+    stagedUploadsDir,
+    liveUploadsDir,
+    {
+      recursive: true
+    }
+  );
+}
+
+export async function restoreValidatedBackup(
+  stagedDir: string
+): Promise<RestoreResult> {
+  const validation =
+    await validateStagedBackup(
+      stagedDir
+    );
+
+  if (
+    !validation.valid
+  ) {
     return {
       success: false,
-      message: 'Restore aborted: Backup failed pre-flight validation.',
-      manifest: validation.manifest,
-      error: validation.errors.join('; ')
+      message:
+        'Restore aborted: Backup failed pre-flight validation.',
+      manifest:
+        validation.manifest,
+      error:
+        validation.errors.join(
+          '; '
+        )
     };
   }
 
-  const liveDir = process.cwd();
-  const liveUploadsDir = path.join(liveDir, 'uploads');
-  const rollbackTag = `rollback_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  const rollbackUploadsDir = path.join(liveDir, `uploads.${rollbackTag}`);
+  const database =
+    await readStagedDatabase(
+      stagedDir
+    );
 
-  const stagedDbPath = path.join(stagedDir, 'database.sqlite3');
-  const stagedUploadsDir = path.join(stagedDir, 'uploads');
+  const rollbackTag =
+    `rollback_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
-  const liveDb = getDb();
-  let isAttached = false;
-  let isTransactionActive = false;
-  let uploadsReplaced = false;
+  const rollbackUploadsDir =
+    path.join(
+      process.cwd(),
+      `uploads.${rollbackTag}`
+    );
+
+  let databaseRestored =
+    false;
+  let uploadsRestored =
+    false;
 
   try {
-    // Step 2: Backup live uploads directory for filesystem rollback
-    if (fs.existsSync(liveUploadsDir)) {
-      await fs.promises.cp(liveUploadsDir, rollbackUploadsDir, { recursive: true });
-    }
+    /*
+     * PostgreSQL transaction handles the database atomically.
+     */
+    await replaceDatabase(
+      database
+    );
 
-    // Step 3: Attach staged backup database to live connection
-    // Escape single quotes in path if any
-    const safeStagedPath = stagedDbPath.replace(/'/g, "''");
-    liveDb.exec(`ATTACH DATABASE '${safeStagedPath}' AS restore_source;`);
-    isAttached = true;
+    databaseRestored = true;
 
-    // Verify attached database tables and compatibility
-    const attachedTables = (
-      liveDb
-        .prepare("SELECT name FROM restore_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
-        .all() as any[]
-    ).map((t) => t.name);
+    /*
+     * Keep a filesystem rollback copy before replacing uploads.
+     */
+    await backupLiveUploads(
+      rollbackUploadsDir
+    );
 
-    for (const table of REQUIRED_TABLES) {
-      if (!attachedTables.includes(table)) {
-        throw new Error(`Attached restore source is missing required table: "${table}".`);
-      }
-      // Verify column compatibility
-      const liveCols = (liveDb.prepare(`PRAGMA main.table_info(${table});`).all() as any[]).map((c) => c.name);
-      const srcCols = (liveDb.prepare(`PRAGMA restore_source.table_info(${table});`).all() as any[]).map((c) => c.name);
-      if (liveCols.length !== srcCols.length || !liveCols.every((col, idx) => col === srcCols[idx])) {
-        throw new Error(`Schema mismatch in table "${table}": live columns do not match backup columns.`);
-      }
-    }
+    await restoreUploads(
+      stagedDir
+    );
 
-    // Step 4: Execute atomic data replacement inside a single SQLite transaction
-    liveDb.exec('BEGIN IMMEDIATE;');
-    isTransactionActive = true;
-
-    // Delete existing records in child-first dependency order
-    for (const table of RESTORE_DELETE_ORDER) {
-      liveDb.exec(`DELETE FROM main.${table};`);
-    }
-
-    // Insert records from backup in parent-first dependency order
-    for (const table of RESTORE_INSERT_ORDER) {
-      liveDb.exec(`INSERT INTO main.${table} SELECT * FROM restore_source.${table};`);
-    }
-
-    // Step 5: In-transaction validation
-    const inTxIntegrity = liveDb.prepare('PRAGMA main.integrity_check;').get() as any;
-    if (!inTxIntegrity || inTxIntegrity.integrity_check !== 'ok') {
-      throw new Error(`Restored database failed integrity check during transaction: ${JSON.stringify(inTxIntegrity)}`);
-    }
-
-    const inTxFk = liveDb.prepare('PRAGMA main.foreign_key_check;').all();
-    if (inTxFk.length > 0) {
-      throw new Error(`Restored database has ${inTxFk.length} foreign key check violations in transaction.`);
-    }
-
-    // Commit transaction
-    liveDb.exec('COMMIT;');
-    isTransactionActive = false;
-
-    // Detach backup source
-    liveDb.exec('DETACH DATABASE restore_source;');
-    isAttached = false;
-
-    // Step 6: Synchronize uploads directory
-    if (fs.existsSync(stagedUploadsDir)) {
-      if (!fs.existsSync(liveUploadsDir)) {
-        await fs.promises.mkdir(liveUploadsDir, { recursive: true });
-      }
-      await fs.promises.cp(stagedUploadsDir, liveUploadsDir, { recursive: true });
-    }
-    uploadsReplaced = true;
-
-    // Step 7: Post-commit verification on the SAME live connection
-    const postIntegrity = liveDb.prepare('PRAGMA integrity_check;').get() as any;
-    if (!postIntegrity || postIntegrity.integrity_check !== 'ok') {
-      throw new Error(`Restored database failed post-commit integrity check: ${JSON.stringify(postIntegrity)}`);
-    }
-
-    const postFk = liveDb.prepare('PRAGMA foreign_key_check;').all();
-    if (postFk.length > 0) {
-      throw new Error(`Restored database has ${postFk.length} post-commit foreign key check violations.`);
-    }
-
-    // Step 8: Self-healing sync for any disk/BLOB gaps
-    await syncFilesOnStartup();
-
-    // Clean up rollback copy
-    await fs.promises.rm(rollbackUploadsDir, { recursive: true, force: true });
+    uploadsRestored = true;
 
     return {
       success: true,
-      message: 'Community Library was restored and verified successfully.',
-      manifest: validation.manifest
+      message:
+        'Community Library PostgreSQL database and uploads were restored successfully.',
+      manifest:
+        validation.manifest
     };
-  } catch (err: any) {
-    console.error('[BackupService] Restoration failed. Initiating automatic rollback:', err);
+  } catch (error: any) {
+    console.error(
+      '[BackupService] PostgreSQL restoration failed:',
+      error
+    );
 
-    // Rollback SQLite transaction if active
-    if (isTransactionActive) {
+    /*
+     * Database restoration is already transactional.
+     * If replaceDatabase() throws, PostgreSQL rolled it back.
+     *
+     * If uploads were replaced and a rollback copy exists,
+     * restore the previous filesystem state.
+     */
+    if (
+      uploadsRestored &&
+      fs.existsSync(
+        rollbackUploadsDir
+      )
+    ) {
       try {
-        liveDb.exec('ROLLBACK;');
-        console.log('[BackupService] Active SQLite restore transaction rolled back.');
-      } catch (rbErr) {
-        console.error('[BackupService] Error during SQLite transaction rollback:', rbErr);
-      }
-      isTransactionActive = false;
-    }
+        const liveUploadsDir =
+          path.join(
+            process.cwd(),
+            'uploads'
+          );
 
-    // Detach attached database if still attached
-    if (isAttached) {
-      try {
-        liveDb.exec('DETACH DATABASE restore_source;');
-        console.log('[BackupService] Attached restore_source detached.');
-      } catch (detachErr) {
-        console.warn('[BackupService] Warning during restore_source detach:', detachErr);
-      }
-      isAttached = false;
-    }
+        await fs.promises.rm(
+          liveUploadsDir,
+          {
+            recursive: true,
+            force: true
+          }
+        );
 
-    // Revert filesystem if uploads were replaced
-    if (uploadsReplaced && fs.existsSync(rollbackUploadsDir)) {
-      try {
-        await fs.promises.rm(liveUploadsDir, { recursive: true, force: true });
-        await fs.promises.cp(rollbackUploadsDir, liveUploadsDir, { recursive: true });
-        console.log('[BackupService] Filesystem uploads rolled back to previous state.');
-      } catch (fsErr) {
-        console.error('[BackupService] Critical: Filesystem uploads rollback failed:', fsErr);
+        await fs.promises.cp(
+          rollbackUploadsDir,
+          liveUploadsDir,
+          {
+            recursive: true
+          }
+        );
+      } catch (rollbackError) {
+        console.error(
+          '[BackupService] CRITICAL: Upload rollback failed:',
+          rollbackError
+        );
       }
     }
-
-    // Clean up rollback copy
-    await fs.promises.rm(rollbackUploadsDir, { recursive: true, force: true });
 
     return {
       success: false,
-      message: 'Library restoration failed. Previous library state was safely rolled back.',
-      error: err.message || 'Unknown restoration error'
+      message:
+        databaseRestored
+          ? 'Library restoration failed. Database was restored transactionally, but the filesystem restore failed.'
+          : 'Library restoration failed. PostgreSQL transaction was rolled back.',
+      error:
+        error?.message ||
+        'Unknown restoration error'
     };
+  } finally {
+    await fs.promises.rm(
+      rollbackUploadsDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
   }
 }

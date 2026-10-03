@@ -10,3 +10,5 @@ coverage/
 database/
 uploads/
 backend/library.db
+backend/src/library.db
+migration-temp/

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-labelledby="title desc">
+  <title id="title">Community Digital Library Apple Touch Icon</title>
+  <desc id="desc">Blue library app icon for home screens.</desc>
+  <rect width="180" height="180" rx="40" fill="#1d4ed8"/>
+  <path d="M45 48c0-7.7 6.3-14 14-14h25c12.7 0 23 10.3 23 23v82c0 3.3-2.7 6-6 6H73c-15.5 0-28-12.5-28-28V48Z" fill="#eff6ff"/>
+  <path d="M135 48c0-7.7-6.3-14-14-14H96c-12.7 0-23 10.3-23 23v82c0 3.3 2.7 6 6 6h28c15.5 0 28-12.5 28-28V48Z" fill="#dbeafe"/>
+  <path d="M63 64h26M63 83h26M63 102h20M97 64h26M97 83h26M103 102h20" stroke="#1e3a8a" stroke-width="7" stroke-linecap="round"/>
+  <path d="M90 58v79" stroke="#93c5fd" stroke-width="6" stroke-linecap="round"/>
+</svg>

@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+@layer base {
+  html {
+    background: #f8fafc;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    overscroll-behavior-y: contain;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  button,
+  a {
+    touch-action: manipulation;
+  }
+}

@@ -30,7 +30,7 @@ bookmarkRouter.get('/', requireAuth, async (req: Request, res: Response) => {
       language: row.language,
       isbn: row.isbn,
       coverUrl: row.cover_path,
-      available: row.is_available === 1,
+      available: row.is_available === true,
       rating: row.rating,
       bookmarkedAt: row.bookmarked_at
     }));
@@ -54,22 +54,43 @@ async function handleAddBookmark(req: Request, res: Response) {
     }
 
     // Verify book exists
-    const book = await queryOne('SELECT id FROM books WHERE id = ?', [bookId]);
+    const book = await queryOne(
+      'SELECT id FROM books WHERE id = ?',
+      [bookId]
+    );
+
     if (!book) {
       res.status(404).json({ error: 'Book not found' });
       return;
     }
 
     const bookmarkId = `bmk_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    // PostgreSQL equivalent of SQLite's INSERT OR IGNORE.
+    // The database has UNIQUE(user_id, book_id).
     await run(
-      'INSERT OR IGNORE INTO bookmarks (id, user_id, book_id) VALUES (?, ?, ?)',
+      `
+      INSERT INTO bookmarks (
+        id,
+        user_id,
+        book_id
+      )
+      VALUES (?, ?, ?)
+      ON CONFLICT (user_id, book_id) DO NOTHING
+      `,
       [bookmarkId, userId, bookId]
     );
 
-    res.status(201).json({ message: 'Book saved to reading list', bookId, bookmarked: true });
+    res.status(201).json({
+      message: 'Book saved to reading list',
+      bookId,
+      bookmarked: true
+    });
   } catch (error: any) {
     console.error('Add bookmark error:', error);
-    res.status(500).json({ error: error.message || 'Failed to bookmark book' });
+    res.status(500).json({
+      error: error.message || 'Failed to bookmark book'
+    });
   }
 }
 
@@ -80,15 +101,29 @@ bookmarkRouter.post('/', requireAuth, handleAddBookmark);
 bookmarkRouter.post('/:bookId', requireAuth, handleAddBookmark);
 
 // DELETE /api/bookmarks/:bookId - Remove book from reading list
-bookmarkRouter.delete('/:bookId', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.user!.id;
-    const { bookId } = req.params;
+bookmarkRouter.delete(
+  '/:bookId',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const { bookId } = req.params;
 
-    await run('DELETE FROM bookmarks WHERE user_id = ? AND book_id = ?', [userId, bookId]);
-    res.json({ message: 'Book removed from reading list', bookId, bookmarked: false });
-  } catch (error: any) {
-    console.error('Delete bookmark error:', error);
-    res.status(500).json({ error: 'Failed to remove bookmark' });
+      await run(
+        'DELETE FROM bookmarks WHERE user_id = ? AND book_id = ?',
+        [userId, bookId]
+      );
+
+      res.json({
+        message: 'Book removed from reading list',
+        bookId,
+        bookmarked: false
+      });
+    } catch (error: any) {
+      console.error('Delete bookmark error:', error);
+      res.status(500).json({
+        error: 'Failed to remove bookmark'
+      });
+    }
   }
-});
+);

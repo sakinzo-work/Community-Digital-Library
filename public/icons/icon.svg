@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Community Digital Library</title>
+  <desc id="desc">Blue library app icon with an open book.</desc>
+  <rect width="512" height="512" rx="112" fill="#1d4ed8"/>
+  <path d="M128 140c0-17.7 14.3-32 32-32h72c26.5 0 48 21.5 48 48v236c0 6.6-5.4 12-12 12h-80c-33.1 0-60-26.9-60-60V140Z" fill="#eff6ff"/>
+  <path d="M384 140c0-17.7-14.3-32-32-32h-72c-26.5 0-48 21.5-48 48v236c0 6.6 5.4 12 12 12h80c33.1 0 60-26.9 60-60V140Z" fill="#dbeafe"/>
+  <path d="M172 180h64M172 228h64M172 276h52M276 180h64M276 228h64M288 276h52" stroke="#1e3a8a" stroke-width="20" stroke-linecap="round"/>
+  <path d="M256 154v226" stroke="#93c5fd" stroke-width="16" stroke-linecap="round"/>
+</svg>

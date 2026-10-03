@@ -1,24 +1,26 @@
 import fs from 'fs';
 import path from 'path';
-import { queryAll, queryOne, run } from '../database/db';
+import { queryOne, run } from '../database/db';
 
 const uploadsDir = path.join(process.cwd(), 'uploads');
 const pdfsDir = path.join(uploadsDir, 'pdfs');
 
-/**
- * Ensure upload directories exist on disk
- */
 export function ensureDirectories(): void {
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
+
   if (!fs.existsSync(pdfsDir)) {
     fs.mkdirSync(pdfsDir, { recursive: true });
   }
 }
 
 /**
- * Persist an uploaded PDF file into the SQLite database for permanent durable storage
+ * Save an uploaded PDF to local disk and PostgreSQL.
+ *
+ * PostgreSQL stores the PDF as BYTEA in uploaded_files.
+ * The local copy is kept because the current PDF-serving
+ * routes still use the local uploads directory.
  */
 export async function saveUploadedPdf(
   filename: string,
@@ -28,31 +30,64 @@ export async function saveUploadedPdf(
 ): Promise<void> {
   ensureDirectories();
 
-  // Ensure file is on disk
   const diskPath = path.join(pdfsDir, filename);
+
   if (!fs.existsSync(diskPath)) {
     await fs.promises.writeFile(diskPath, buffer);
   }
 
-  // Ensure file is persisted in SQLite uploaded_files table
-  await run(
-    `
-    INSERT OR REPLACE INTO uploaded_files (
-      filename,
-      file_path,
-      mime_type,
-      file_size,
-      data,
-      created_at
-    )
-    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `,
-    [filename, relativePath, 'application/pdf', fileSize, buffer]
+  const existing = await queryOne(
+    'SELECT filename FROM uploaded_files WHERE filename = ?',
+    [filename]
   );
+
+  if (existing) {
+    await run(
+      `
+      UPDATE uploaded_files
+      SET
+        file_path = ?,
+        mime_type = ?,
+        file_size = ?,
+        data = ?,
+        created_at = CURRENT_TIMESTAMP
+      WHERE filename = ?
+      `,
+      [
+        relativePath,
+        'application/pdf',
+        fileSize,
+        buffer,
+        filename
+      ]
+    );
+  } else {
+    await run(
+      `
+      INSERT INTO uploaded_files (
+        filename,
+        file_path,
+        mime_type,
+        file_size,
+        data,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `,
+      [
+        filename,
+        relativePath,
+        'application/pdf',
+        fileSize,
+        buffer
+      ]
+    );
+  }
 }
 
 /**
- * Restore a specific file from SQLite database to disk if it was missing
+ * Restore a PDF from PostgreSQL BYTEA storage to local disk
+ * if the local copy is missing.
  */
 export async function restoreFileFromDatabase(
   filename: string,
@@ -66,71 +101,131 @@ export async function restoreFileFromDatabase(
       [filename]
     );
 
-    if (row && row.data) {
-      await fs.promises.writeFile(targetDiskPath, row.data);
-      console.log(`[Storage] Restored PDF "${filename}" from SQLite database to disk.`);
+    if (row?.data) {
+      await fs.promises.mkdir(
+        path.dirname(targetDiskPath),
+        { recursive: true }
+      );
+
+      await fs.promises.writeFile(
+        targetDiskPath,
+        row.data
+      );
+
+      console.log(
+        `[Storage] Restored PDF "${filename}" from PostgreSQL storage to disk.`
+      );
+
       return true;
     }
   } catch (err) {
-    console.error(`[Storage] Failed to restore "${filename}" from SQLite:`, err);
+    console.error(
+      `[Storage] Failed to restore "${filename}" from PostgreSQL:`,
+      err
+    );
   }
 
   return false;
 }
 
 /**
- * Synchronize all files between SQLite and the disk on startup
+ * Synchronize uploaded PDFs between PostgreSQL and local disk.
+ *
+ * This is retained temporarily during the migration.
+ * Supabase Storage will become the final persistent file
+ * storage layer in the next migration step.
  */
 export async function syncFilesOnStartup(): Promise<void> {
   try {
     ensureDirectories();
 
-    // 1. Restore any database files that might be missing from disk (e.g. after container restart)
-    const dbFiles = await queryAll<{ filename: string; data: Buffer }>(
-      'SELECT filename, data FROM uploaded_files'
+    /*
+     * 1. Restore PDFs from PostgreSQL if their local copy
+     *    is missing.
+     */
+    const dbFiles = await import('../database/db').then(
+      ({ queryAll }) =>
+        queryAll<{ filename: string; data: Buffer }>(
+          'SELECT filename, data FROM uploaded_files'
+        )
     );
 
-    for (const f of dbFiles) {
-      const diskPath = path.join(pdfsDir, f.filename);
-      if (!fs.existsSync(diskPath) && f.data) {
-        await fs.promises.writeFile(diskPath, f.data);
-        console.log(`[Storage] Restored "${f.filename}" to disk from SQLite.`);
+    for (const file of await dbFiles) {
+      const diskPath = path.join(
+        pdfsDir,
+        file.filename
+      );
+
+      if (!fs.existsSync(diskPath) && file.data) {
+        await fs.promises.writeFile(
+          diskPath,
+          file.data
+        );
+
+        console.log(
+          `[Storage] Restored "${file.filename}" to disk from PostgreSQL.`
+        );
       }
     }
 
-    // 2. Backup any existing disk PDFs to SQLite if not already stored
-    if (fs.existsSync(pdfsDir)) {
-      const diskFiles = await fs.promises.readdir(pdfsDir);
-      for (const df of diskFiles) {
-        if (df.toLowerCase().endsWith('.pdf')) {
-          const existsInDb = await queryOne(
-            'SELECT filename FROM uploaded_files WHERE filename = ?',
-            [df]
-          );
+    /*
+     * 2. Store any local PDFs that are not already present
+     *    in PostgreSQL.
+     */
+    const diskFiles = await fs.promises.readdir(pdfsDir);
 
-          if (!existsInDb) {
-            const diskPath = path.join(pdfsDir, df);
-            const content = await fs.promises.readFile(diskPath);
-            await run(
-              `
-              INSERT INTO uploaded_files (
-                filename,
-                file_path,
-                mime_type,
-                file_size,
-                data,
-                created_at
-              )
-              VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-              `,
-              [df, `/uploads/pdfs/${df}`, 'application/pdf', content.length, content]
-            );
-            console.log(`[Storage] Backed up disk PDF "${df}" into SQLite table.`);
-          }
-        }
+    for (const filename of diskFiles) {
+      if (!filename.toLowerCase().endsWith('.pdf')) {
+        continue;
       }
+
+      const existsInDb = await queryOne(
+        'SELECT filename FROM uploaded_files WHERE filename = ?',
+        [filename]
+      );
+
+      if (existsInDb) {
+        continue;
+      }
+
+      const diskPath = path.join(
+        pdfsDir,
+        filename
+      );
+
+      const content = await fs.promises.readFile(
+        diskPath
+      );
+
+      await run(
+        `
+        INSERT INTO uploaded_files (
+          filename,
+          file_path,
+          mime_type,
+          file_size,
+          data,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `,
+        [
+          filename,
+          `/uploads/pdfs/${filename}`,
+          'application/pdf',
+          content.length,
+          content
+        ]
+      );
+
+      console.log(
+        `[Storage] Backed up disk PDF "${filename}" into PostgreSQL.`
+      );
     }
   } catch (err) {
-    console.error('[Storage] Error during file synchronization on startup:', err);
+    console.error(
+      '[Storage] Error during file synchronization on startup:',
+      err
+    );
   }
 }

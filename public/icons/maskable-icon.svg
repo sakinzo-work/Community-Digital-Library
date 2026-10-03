@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Community Digital Library Maskable Icon</title>
+  <desc id="desc">Maskable blue library app icon with safe padding.</desc>
+  <rect width="512" height="512" fill="#1d4ed8"/>
+  <circle cx="256" cy="256" r="192" fill="#2563eb"/>
+  <path d="M142 156c0-17.7 14.3-32 32-32h61c25.4 0 46 20.6 46 46v198c0 6.6-5.4 12-12 12h-70c-31.5 0-57-25.5-57-57V156Z" fill="#eff6ff"/>
+  <path d="M370 156c0-17.7-14.3-32-32-32h-61c-25.4 0-46 20.6-46 46v198c0 6.6 5.4 12 12 12h70c31.5 0 57-25.5 57-57V156Z" fill="#dbeafe"/>
+  <path d="M184 191h54M184 236h54M184 281h42M274 191h54M274 236h54M286 281h42" stroke="#1e3a8a" stroke-width="18" stroke-linecap="round"/>
+  <path d="M256 166v199" stroke="#93c5fd" stroke-width="15" stroke-linecap="round"/>
+</svg>

@@ -8,6 +8,7 @@ import { RouterProvider, useRouter } from './context/RouterContext';
 import { AuthProvider } from './context/AuthContext';
 import { Navbar } from './components/layout/Navbar';
 import { Footer } from './components/layout/Footer';
+import { BottomNav } from './components/layout/BottomNav';
 import { HomePage } from './pages/HomePage';
 import { BooksPage } from './pages/BooksPage';
 import { BookDetailsPage } from './pages/BookDetailsPage';
@@ -74,10 +75,11 @@ function AppContent() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50/50 text-slate-900 font-sans antialiased selection:bg-blue-100 selection:text-blue-900">
       <Navbar />
-      <main className="flex-1">
+      <main className="flex-1 pb-24 md:pb-0">
         {CurrentPage}
       </main>
       <Footer />
+      <BottomNav />
     </div>
   );
 }
@@ -91,4 +93,3 @@ export default function App() {
     </RouterProvider>
   );
 }
-

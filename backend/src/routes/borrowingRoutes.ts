@@ -1,7 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { queryAll, queryOne, run, withTransaction } from '../database/db';
 import { requireAuth } from '../middleware/auth';
-import { expireStaleReservations, createNotification } from '../services/reservationService';
+import {
+  expireStaleReservations,
+  createNotification
+} from '../services/reservationService';
 
 export const borrowingRouter = Router();
 
@@ -15,13 +18,17 @@ export function isBorrowingOverdue(
 ): boolean {
   if (status === 'returned' || returnedAt) return false;
   if (!dueDateStr) return false;
+
   const now = new Date();
   let due = new Date(dueDateStr);
+
   if (Number.isNaN(due.getTime())) return false;
+
   // If YYYY-MM-DD format (10 chars), loan is valid through 23:59:59.999Z of that day
   if (dueDateStr.length === 10) {
     due = new Date(dueDateStr + 'T23:59:59.999Z');
   }
+
   return now.getTime() > due.getTime();
 }
 
@@ -34,89 +41,96 @@ export function isBorrowingOverdue(
  * Admin users:
  *   - Can see all borrowing records when ?all=true is supplied.
  */
-borrowingRouter.get('/', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.user!.id;
-    const isAdmin = req.user!.role === 'admin';
-    const viewAll = isAdmin && req.query.all === 'true';
+borrowingRouter.get(
+  '/',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const isAdmin = req.user!.role === 'admin';
+      const viewAll = isAdmin && req.query.all === 'true';
 
-    let sql = `
-      SELECT
-        br.id,
-        br.user_id,
-        br.book_id,
-        br.borrowed_at,
-        br.due_date,
-        br.returned_at,
-        br.status,
+      let sql = `
+        SELECT
+          br.id,
+          br.user_id,
+          br.book_id,
+          br.borrowed_at,
+          br.due_date,
+          br.returned_at,
+          br.status,
 
-        b.title AS book_title,
-        b.author AS book_author,
-        b.cover_path AS book_cover,
-        b.isbn AS book_isbn,
+          b.title AS book_title,
+          b.author AS book_author,
+          b.cover_path AS book_cover,
+          b.isbn AS book_isbn,
 
-        u.full_name AS user_name,
-        u.email AS user_email,
-        u.library_card_number
+          u.full_name AS user_name,
+          u.email AS user_email,
+          u.library_card_number
 
-      FROM borrowings br
+        FROM borrowings br
 
-      JOIN books b
-        ON b.id = br.book_id
+        JOIN books b
+          ON b.id = br.book_id
 
-      JOIN users u
-        ON u.id = br.user_id
-    `;
+        JOIN users u
+          ON u.id = br.user_id
+      `;
 
-    const params: any[] = [];
+      const params: any[] = [];
 
-    if (!viewAll) {
-      sql += ` WHERE br.user_id = ?`;
-      params.push(userId);
+      if (!viewAll) {
+        sql += ` WHERE br.user_id = ?`;
+        params.push(userId);
+      }
+
+      sql += ` ORDER BY br.borrowed_at DESC`;
+
+      const rows = await queryAll<any>(sql, params);
+
+      const borrowings = rows.map((row) => {
+        const isOverdue = isBorrowingOverdue(
+          row.due_date,
+          row.returned_at,
+          row.status
+        );
+
+        return {
+          id: row.id,
+
+          userId: row.user_id,
+          userName: row.user_name,
+          userEmail: row.user_email,
+          libraryCardNumber: row.library_card_number,
+
+          bookId: row.book_id,
+          bookTitle: row.book_title,
+          bookAuthor: row.book_author,
+          bookCover: row.book_cover,
+          bookIsbn: row.book_isbn,
+
+          borrowedAt: row.borrowed_at,
+          dueDate: row.due_date,
+          returnedAt: row.returned_at,
+
+          status: isOverdue ? 'overdue' : row.status
+        };
+      });
+
+      res.json({
+        borrowings,
+        count: borrowings.length
+      });
+    } catch (error: any) {
+      console.error('Fetch borrowings error:', error);
+
+      res.status(500).json({
+        error: error.message || 'Failed to fetch borrowings'
+      });
     }
-
-    sql += ` ORDER BY br.borrowed_at DESC`;
-
-    const rows = await queryAll<any>(sql, params);
-
-    const borrowings = rows.map((row) => {
-      const isOverdue = isBorrowingOverdue(row.due_date, row.returned_at, row.status);
-
-      return {
-        id: row.id,
-
-        userId: row.user_id,
-        userName: row.user_name,
-        userEmail: row.user_email,
-        libraryCardNumber: row.library_card_number,
-
-        bookId: row.book_id,
-        bookTitle: row.book_title,
-        bookAuthor: row.book_author,
-        bookCover: row.book_cover,
-        bookIsbn: row.book_isbn,
-
-        borrowedAt: row.borrowed_at,
-        dueDate: row.due_date,
-        returnedAt: row.returned_at,
-
-        status: isOverdue ? 'overdue' : row.status
-      };
-    });
-
-    res.json({
-      borrowings,
-      count: borrowings.length
-    });
-  } catch (error: any) {
-    console.error('Fetch borrowings error:', error);
-
-    res.status(500).json({
-      error: error.message || 'Failed to fetch borrowings'
-    });
   }
-});
-
+);
 
 /*
  * Handle borrowing a book.
@@ -155,7 +169,7 @@ async function handleBorrowBook(req: Request, res: Response) {
     await expireStaleReservations();
 
     const result = await withTransaction(
-      async ({ queryOne, run }) => {
+      async ({ queryOne, queryAll, run }) => {
 
         /*
          * 1. Find the book by primary ID or ISBN.
@@ -184,10 +198,15 @@ async function handleBorrowBook(req: Request, res: Response) {
          * A book can only be newly borrowed if it has a valid real digital PDF.
          * A book with NULL, empty, or whitespace-only pdf_path must be treated as a catalogue-only book.
          */
-        if (!book.pdf_path || typeof book.pdf_path !== 'string' || !book.pdf_path.trim()) {
+        if (
+          !book.pdf_path ||
+          typeof book.pdf_path !== 'string' ||
+          !book.pdf_path.trim()
+        ) {
           throw {
             status: 400,
-            message: 'This book does not have a digital copy available to borrow.'
+            message:
+              'This book does not have a digital copy available to borrow.'
           };
         }
 
@@ -216,11 +235,12 @@ async function handleBorrowBook(req: Request, res: Response) {
           };
         }
 
-
         /*
          * 3. Check whether there is a ready reservation for this book.
+         *
          *    - If a ready reservation exists, only that reserved member can borrow it.
-         *    - If no ready reservation exists, general borrowing requires book.is_available = 1.
+         *    - If no ready reservation exists, general borrowing requires
+         *      book.is_available = true.
          */
         const readyReservation = await queryOne<any>(
           `
@@ -244,9 +264,11 @@ async function handleBorrowBook(req: Request, res: Response) {
                 'This book is currently held on reserve for another member in the queue.'
             };
           }
+
           fulfillingReservationId = readyReservation.id;
         } else {
-          if (book.is_available !== 1) {
+          // PostgreSQL BOOLEAN
+          if (book.is_available !== true) {
             throw {
               status: 400,
               message:
@@ -255,7 +277,6 @@ async function handleBorrowBook(req: Request, res: Response) {
           }
         }
 
-
         /*
          * 4. Generate a unique borrowing ID.
          */
@@ -263,7 +284,6 @@ async function handleBorrowBook(req: Request, res: Response) {
           `brw_${Date.now()}_${Math.random()
             .toString(36)
             .substring(2, 10)}`;
-
 
         /*
          * 5. Calculate borrowing and due dates.
@@ -283,7 +303,6 @@ async function handleBorrowBook(req: Request, res: Response) {
 
         const dueDateValue =
           dueDate.toISOString().split('T')[0];
-
 
         /*
          * 6. Create borrowing record.
@@ -309,7 +328,6 @@ async function handleBorrowBook(req: Request, res: Response) {
           ]
         );
 
-
         /*
          * 7. Fulfill reservation if applicable.
          */
@@ -317,7 +335,9 @@ async function handleBorrowBook(req: Request, res: Response) {
           await run(
             `
             UPDATE reservations
-            SET status = 'fulfilled', queue_position = 0
+            SET
+              status = 'fulfilled',
+              queue_position = 0
             WHERE id = ?
             `,
             [fulfillingReservationId]
@@ -328,7 +348,8 @@ async function handleBorrowBook(req: Request, res: Response) {
             `
             SELECT id
             FROM reservations
-            WHERE book_id = ? AND status = 'waiting'
+            WHERE book_id = ?
+              AND status = 'waiting'
             ORDER BY queue_position ASC, reserved_at ASC
             `,
             [canonicalBookId]
@@ -336,7 +357,11 @@ async function handleBorrowBook(req: Request, res: Response) {
 
           for (let i = 0; i < waitingList.length; i++) {
             await run(
-              `UPDATE reservations SET queue_position = ? WHERE id = ?`,
+              `
+              UPDATE reservations
+              SET queue_position = ?
+              WHERE id = ?
+              `,
               [i + 1, waitingList[i].id]
             );
           }
@@ -344,8 +369,12 @@ async function handleBorrowBook(req: Request, res: Response) {
           await run(
             `
             UPDATE reservations
-            SET status = 'fulfilled', queue_position = 0
-            WHERE user_id = ? AND book_id = ? AND status IN ('waiting', 'ready')
+            SET
+              status = 'fulfilled',
+              queue_position = 0
+            WHERE user_id = ?
+              AND book_id = ?
+              AND status IN ('waiting', 'ready')
             `,
             [userId, canonicalBookId]
           );
@@ -355,7 +384,8 @@ async function handleBorrowBook(req: Request, res: Response) {
             `
             SELECT id
             FROM reservations
-            WHERE book_id = ? AND status = 'waiting'
+            WHERE book_id = ?
+              AND status = 'waiting'
             ORDER BY queue_position ASC, reserved_at ASC
             `,
             [canonicalBookId]
@@ -363,27 +393,31 @@ async function handleBorrowBook(req: Request, res: Response) {
 
           for (let i = 0; i < waitingList.length; i++) {
             await run(
-              `UPDATE reservations SET queue_position = ? WHERE id = ?`,
+              `
+              UPDATE reservations
+              SET queue_position = ?
+              WHERE id = ?
+              `,
               [i + 1, waitingList[i].id]
             );
           }
         }
 
-
         /*
          * 8. Mark the book as unavailable.
+         *
+         * PostgreSQL BOOLEAN = false
          */
         await run(
           `
           UPDATE books
           SET
-            is_available = 0,
+            is_available = false,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
           `,
           [canonicalBookId]
         );
-
 
         /*
          * 9. Return the new borrowing information.
@@ -400,7 +434,6 @@ async function handleBorrowBook(req: Request, res: Response) {
       }
     );
 
-
     res.status(201).json({
       message:
         `Successfully borrowed "${result.bookTitle}". Due date is ${result.dueDate}.`,
@@ -414,9 +447,15 @@ async function handleBorrowBook(req: Request, res: Response) {
         : 500;
 
     if (status >= 500) {
-      console.error('Borrow book server error:', error);
+      console.error(
+        'Borrow book server error:',
+        error
+      );
     } else {
-      console.warn(`Borrow book notice (${status}):`, error?.message || error);
+      console.warn(
+        `Borrow book notice (${status}):`,
+        error?.message || error
+      );
     }
 
     res.status(status).json({
@@ -426,7 +465,6 @@ async function handleBorrowBook(req: Request, res: Response) {
     });
   }
 }
-
 
 /*
  * POST /api/borrowings
@@ -442,7 +480,6 @@ borrowingRouter.post(
   handleBorrowBook
 );
 
-
 /*
  * POST /api/borrowings/:bookId
  *
@@ -455,7 +492,6 @@ borrowingRouter.post(
   handleBorrowBook
 );
 
-
 /*
  * Handle returning a book.
  * Works with both PUT and POST on /:id/return
@@ -464,6 +500,7 @@ async function handleReturnBook(req: Request, res: Response) {
   try {
     const userId = req.user!.id;
     const isAdmin = req.user!.role === 'admin';
+
     const rawRequestedId =
       req.params.id ||
       req.body?.borrowingId ||
@@ -472,10 +509,16 @@ async function handleReturnBook(req: Request, res: Response) {
       req.body?.book_id ||
       '';
 
-    const requestedId = typeof rawRequestedId === 'string' ? rawRequestedId.trim() : '';
+    const requestedId =
+      typeof rawRequestedId === 'string'
+        ? rawRequestedId.trim()
+        : '';
 
     if (!requestedId) {
-      res.status(400).json({ error: 'Borrowing ID or Book ID is required' });
+      res.status(400).json({
+        error:
+          'Borrowing ID or Book ID is required'
+      });
       return;
     }
 
@@ -499,7 +542,8 @@ async function handleReturnBook(req: Request, res: Response) {
         );
 
         /*
-         * 2. If not found by borrowing ID, try finding active/overdue loan by book ID or ISBN for current user.
+         * 2. If not found by borrowing ID, try finding active/overdue loan
+         *    by book ID or ISBN for current user.
          */
         if (!borrowing) {
           borrowing = await queryOne<any>(
@@ -510,7 +554,14 @@ async function handleReturnBook(req: Request, res: Response) {
               book_id,
               status
             FROM borrowings
-            WHERE (book_id = ? OR book_id IN (SELECT id FROM books WHERE isbn = ?))
+            WHERE (
+              book_id = ?
+              OR book_id IN (
+                SELECT id
+                FROM books
+                WHERE isbn = ?
+              )
+            )
               AND user_id = ?
               AND status IN ('active', 'overdue')
             ORDER BY borrowed_at DESC
@@ -525,7 +576,8 @@ async function handleReturnBook(req: Request, res: Response) {
         }
 
         /*
-         * 3. If still not found and caller is admin, try finding active/overdue loan across all users.
+         * 3. If still not found and caller is admin,
+         *    try finding active/overdue loan across all users.
          */
         if (!borrowing && isAdmin) {
           borrowing = await queryOne<any>(
@@ -536,7 +588,14 @@ async function handleReturnBook(req: Request, res: Response) {
               book_id,
               status
             FROM borrowings
-            WHERE (book_id = ? OR book_id IN (SELECT id FROM books WHERE isbn = ?))
+            WHERE (
+              book_id = ?
+              OR book_id IN (
+                SELECT id
+                FROM books
+                WHERE isbn = ?
+              )
+            )
               AND status IN ('active', 'overdue')
             ORDER BY borrowed_at DESC
             LIMIT 1
@@ -550,23 +609,54 @@ async function handleReturnBook(req: Request, res: Response) {
 
         /*
          * 4. Check if this record or book was already returned.
+         *
+         * PostgreSQL BOOLEAN parameter is used for the admin flag.
          */
         if (!borrowing) {
           const alreadyReturned = await queryOne<any>(
             `
-            SELECT id, user_id, book_id, status FROM borrowings
-            WHERE id = ? OR (
-              (book_id = ? OR book_id IN (SELECT id FROM books WHERE isbn = ?))
-              AND (user_id = ? OR ?)
-            )
-            ORDER BY borrowed_at DESC LIMIT 1
+            SELECT
+              id,
+              user_id,
+              book_id,
+              status
+            FROM borrowings
+            WHERE
+              id = ?
+              OR (
+                (
+                  book_id = ?
+                  OR book_id IN (
+                    SELECT id
+                    FROM books
+                    WHERE isbn = ?
+                  )
+                )
+                AND (
+                  user_id = ?
+                  OR ? = true
+                )
+              )
+            ORDER BY borrowed_at DESC
+            LIMIT 1
             `,
-            [requestedId, requestedId, requestedId, userId, isAdmin ? 1 : 0]
+            [
+              requestedId,
+              requestedId,
+              requestedId,
+              userId,
+              isAdmin
+            ]
           );
-          if (alreadyReturned && alreadyReturned.status === 'returned') {
+
+          if (
+            alreadyReturned &&
+            alreadyReturned.status === 'returned'
+          ) {
             throw {
               status: 400,
-              message: 'This book has already been marked as returned.'
+              message:
+                'This book has already been marked as returned.'
             };
           }
         }
@@ -577,7 +667,8 @@ async function handleReturnBook(req: Request, res: Response) {
         if (!borrowing) {
           throw {
             status: 404,
-            message: 'Borrowing record not found.'
+            message:
+              'Borrowing record not found.'
           };
         }
 
@@ -620,7 +711,8 @@ async function handleReturnBook(req: Request, res: Response) {
           };
         }
 
-        const returnTime = new Date().toISOString();
+        const returnTime =
+          new Date().toISOString();
 
         /*
          * 9. Update borrowing record.
@@ -653,7 +745,9 @@ async function handleReturnBook(req: Request, res: Response) {
          */
         const nextWaiting = await queryOne<any>(
           `
-          SELECT id, user_id
+          SELECT
+            id,
+            user_id
           FROM reservations
           WHERE book_id = ?
             AND status = 'waiting'
@@ -670,6 +764,10 @@ async function handleReturnBook(req: Request, res: Response) {
           isReservedForNext = true;
           nextReservationId = nextWaiting.id;
 
+          /*
+           * PostgreSQL date arithmetic:
+           * ready now + 24 hours.
+           */
           await run(
             `
             UPDATE reservations
@@ -677,40 +775,55 @@ async function handleReturnBook(req: Request, res: Response) {
               status = 'ready',
               queue_position = 1,
               ready_at = CURRENT_TIMESTAMP,
-              expires_at = datetime('now', '+24 hours')
+              expires_at = CURRENT_TIMESTAMP + INTERVAL '24 hours'
             WHERE id = ?
             `,
             [nextWaiting.id]
           );
 
-          const remainingWaiting = await queryAll<any>(
-            `
-            SELECT id
-            FROM reservations
-            WHERE book_id = ?
-              AND status = 'waiting'
-              AND id != ?
-            ORDER BY queue_position ASC, reserved_at ASC
-            `,
-            [borrowing.book_id, nextWaiting.id]
-          );
+          const remainingWaiting =
+            await queryAll<any>(
+              `
+              SELECT id
+              FROM reservations
+              WHERE book_id = ?
+                AND status = 'waiting'
+                AND id != ?
+              ORDER BY queue_position ASC, reserved_at ASC
+              `,
+              [
+                borrowing.book_id,
+                nextWaiting.id
+              ]
+            );
 
-          for (let i = 0; i < remainingWaiting.length; i++) {
+          for (
+            let i = 0;
+            i < remainingWaiting.length;
+            i++
+          ) {
             await run(
               `
               UPDATE reservations
               SET queue_position = ?
               WHERE id = ?
               `,
-              [i + 2, remainingWaiting[i].id]
+              [
+                i + 2,
+                remainingWaiting[i].id
+              ]
             );
           }
 
+          /*
+           * Keep the book unavailable because
+           * it is held for the promoted member.
+           */
           await run(
             `
             UPDATE books
             SET
-              is_available = 0,
+              is_available = false,
               updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             `,
@@ -718,11 +831,15 @@ async function handleReturnBook(req: Request, res: Response) {
           );
 
           // Get book title for notification
-          const returnedBook = await queryOne<any>(
-            `SELECT title FROM books WHERE id = ?`,
-            [borrowing.book_id]
-          );
-          const bTitle = returnedBook?.title || 'Your reserved book';
+          const returnedBook =
+            await queryOne<any>(
+              `SELECT title FROM books WHERE id = ?`,
+              [borrowing.book_id]
+            );
+
+          const bTitle =
+            returnedBook?.title ||
+            'Your reserved book';
 
           // Notify the promoted member
           await createNotification(
@@ -733,11 +850,15 @@ async function handleReturnBook(req: Request, res: Response) {
             `/book/${borrowing.book_id}`
           );
         } else {
+          /*
+           * No waiting reservation exists,
+           * so the book becomes available again.
+           */
           await run(
             `
             UPDATE books
             SET
-              is_available = 1,
+              is_available = true,
               updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             `,
@@ -771,9 +892,15 @@ async function handleReturnBook(req: Request, res: Response) {
         : 500;
 
     if (status >= 500) {
-      console.error('Return book server error:', error);
+      console.error(
+        'Return book server error:',
+        error
+      );
     } else {
-      console.warn(`Return book notice (${status}):`, error?.message || error);
+      console.warn(
+        `Return book notice (${status}):`,
+        error?.message || error
+      );
     }
 
     res.status(status).json({

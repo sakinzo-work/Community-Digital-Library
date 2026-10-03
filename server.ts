@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import http from 'http';
 import express from 'express';
 import path from 'path';
@@ -26,7 +27,7 @@ async function startServer() {
 
   // 3. Create Express App with all REST APIs & file upload handlers
   const app = createExpressApp();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   const server = http.createServer(app);
 
   // 4. Vite middleware for development or static serving for production
