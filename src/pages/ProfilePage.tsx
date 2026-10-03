@@ -197,7 +197,7 @@ export const ProfilePage: React.FC = () => {
   const returnedBorrows = currentUser.borrowedBooks.filter((b) => b.isReturned);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-8">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-12 space-y-5 sm:space-y-8">
       {/* Toast Notification */}
       {statusMessage && (
         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm flex items-center justify-between shadow-xs animate-in fade-in duration-200">
@@ -216,21 +216,21 @@ export const ProfilePage: React.FC = () => {
       )}
 
       {/* Profile Header & Digital Library Card Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-8 items-start">
         {/* Left Column: Digital Membership Card & Quick Actions */}
         <div className="lg:col-span-5 space-y-6">
           {/* Digital Card */}
-          <div className="rounded-3xl bg-linear-to-br from-slate-900 via-blue-950 to-slate-900 text-white p-6 sm:p-7 shadow-xl border border-blue-900/50 relative overflow-hidden">
+          <div className="rounded-[1.6rem] sm:rounded-3xl bg-linear-to-br from-slate-900 via-blue-950 to-slate-900 text-white p-5 sm:p-7 shadow-xl border border-blue-900/50 relative overflow-hidden">
             <Library className="absolute -right-8 -bottom-8 w-44 h-44 text-white/5 pointer-events-none" />
 
             {/* Top Bar */}
-            <div className="flex items-start justify-between gap-4 mb-6 relative z-10">
-              <div className="flex items-center gap-2.5">
+            <div className="flex items-start justify-between gap-3 mb-6 relative z-10">
+              <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-xs">
                   <Library className="w-5 h-5 text-white" />
                 </div>
-                <div>
-                  <h2 className="font-serif font-bold text-base text-white leading-tight">
+                <div className="min-w-0">
+                  <h2 className="font-serif font-bold text-base text-white leading-tight truncate">
                     Community Digital Library
                   </h2>
                   <span className="text-[11px] text-blue-300 font-medium">
@@ -239,7 +239,7 @@ export const ProfilePage: React.FC = () => {
                 </div>
               </div>
 
-              <span className="px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-xs font-semibold text-blue-200">
+              <span className="shrink-0 px-2.5 sm:px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-[11px] sm:text-xs font-semibold text-blue-200">
                 {currentUser.membershipType}
               </span>
             </div>
@@ -303,22 +303,22 @@ export const ProfilePage: React.FC = () => {
           </div>
 
           {/* Quick Metrics Bar */}
-          <div className="grid grid-cols-3 gap-3">
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 text-center shadow-xs">
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-4 text-center shadow-xs">
               <span className="text-xl sm:text-2xl font-bold font-serif text-blue-700 block">
                 {currentUser.savedBookIds.length}
               </span>
               <span className="text-xs text-slate-500 font-medium">Saved Books</span>
             </div>
 
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 text-center shadow-xs">
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-4 text-center shadow-xs">
               <span className="text-xl sm:text-2xl font-bold font-serif text-emerald-700 block">
                 {activeBorrows.length}
               </span>
               <span className="text-xs text-slate-500 font-medium">Active Loans</span>
             </div>
 
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 text-center shadow-xs">
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-4 text-center shadow-xs">
               <span className="text-xl sm:text-2xl font-bold font-serif text-indigo-700 block">
                 {currentUser.readingHistory.length}
               </span>
@@ -328,33 +328,39 @@ export const ProfilePage: React.FC = () => {
         </div>
 
         {/* Right Column: Member Details & Edit Profile */}
-        <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-8 shadow-xs space-y-6">
-          <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-serif text-2xl font-bold text-slate-900">
-                  {currentUser.name}
-                </h1>
-                <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold">
-                  Active Member
-                </span>
+        <div className="lg:col-span-7 bg-white rounded-[1.6rem] sm:rounded-3xl border border-slate-200/90 p-4 sm:p-8 shadow-sm space-y-5 sm:space-y-6">
+          <div className="flex flex-col gap-4 pb-5 border-b border-slate-100 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3 min-w-0">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-700 text-white shadow-sm">
+                <User className="h-5 w-5" />
               </div>
-              <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5" />
-                <span>Member since {currentUser.memberSince}</span>
-              </p>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="font-serif text-2xl font-bold leading-tight text-slate-950 sm:text-3xl">
+                    {currentUser.name}
+                  </h1>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    Active
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1.5 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>Member since {currentUser.memberSince}</span>
+                </p>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
               {!isEditing ? (
                 <button
                   id="edit-profile-btn"
                   type="button"
                   onClick={() => setIsEditing(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-700 shadow-xs transition-colors hover:bg-slate-50"
                 >
                   <Edit3 className="w-3.5 h-3.5" />
-                  <span>Edit Profile</span>
+                  <span>Edit</span>
                 </button>
               ) : null}
 
@@ -365,11 +371,11 @@ export const ProfilePage: React.FC = () => {
                   logout();
                   navigate('/');
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-700 text-xs font-semibold transition-colors"
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50/40 px-3.5 py-2.5 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50"
                 title="Log out of library account"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Sign Out</span>
+                <span>Logout</span>
               </button>
             </div>
           </div>
@@ -467,40 +473,52 @@ export const ProfilePage: React.FC = () => {
             </form>
           ) : (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
-                  <span className="text-xs text-slate-400 font-medium block">Registered Email</span>
-                  <span className="font-semibold text-slate-800 break-all">{currentUser.email}</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                <div className="flex items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-blue-700 shadow-xs">
+                    <Mail className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-[11px] uppercase tracking-wide text-slate-400 font-bold block">Registered Email</span>
+                    <span className="font-semibold text-slate-800 break-all">{currentUser.email}</span>
+                  </div>
                 </div>
 
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
-                  <span className="text-xs text-slate-400 font-medium block">Contact Phone</span>
-                  <span className="font-semibold text-slate-800">
-                    {currentUser.phone || 'No phone recorded'}
-                  </span>
+                <div className="flex items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-emerald-700 shadow-xs">
+                    <Phone className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <span className="text-[11px] uppercase tracking-wide text-slate-400 font-bold block">Contact Phone</span>
+                    <span className="font-semibold text-slate-800">
+                      {currentUser.phone || 'No phone recorded'}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-                <span className="text-xs text-slate-400 font-medium block mb-1">
-                  Member Bio & Reading Notes
-                </span>
-                <p className="text-sm text-slate-700 leading-relaxed italic">
+              <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                  <FileText className="h-3.5 w-3.5 text-slate-500" />
+                  <span>Member Bio & Reading Notes</span>
+                </div>
+                <p className="mt-2 text-sm leading-relaxed text-slate-700">
                   &ldquo;{currentUser.bio || 'Exploring the community library resources.'}&rdquo;
                 </p>
               </div>
 
               {/* Interests */}
               {currentUser.favoriteCategories && currentUser.favoriteCategories.length > 0 && (
-                <div>
-                  <span className="text-xs text-slate-400 font-medium block mb-2">
-                    Favorite Disciplines:
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
+                <div className="rounded-2xl border border-slate-100 bg-white p-4">
+                  <div className="mb-3 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                    <Layers className="h-3.5 w-3.5 text-blue-600" />
+                    <span>Favorite Disciplines</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
                     {currentUser.favoriteCategories.map((cat) => (
                       <span
                         key={cat}
-                        className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold border border-blue-100"
+                        className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700"
                       >
                         {cat}
                       </span>
@@ -514,21 +532,24 @@ export const ProfilePage: React.FC = () => {
       </div>
 
       {/* Tabs Navigation */}
-      <div className="border-b border-slate-200">
-        <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto pb-px">
+      <div className="rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xs sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none">
+        <div className="flex items-center gap-1.5 overflow-x-auto sm:gap-4 sm:border-b sm:border-slate-200 sm:pb-px">
           <button
             id="tab-saved-books"
             type="button"
             onClick={() => setActiveTab('saved')}
-            className={`pb-3 px-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+            className={`rounded-xl px-3 py-2 text-xs font-bold flex items-center gap-2 transition-all whitespace-nowrap sm:rounded-none sm:pb-3 sm:pt-0 sm:text-sm sm:border-b-2 ${
               activeTab === 'saved'
-                ? 'border-blue-700 text-blue-700'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
+                ? 'bg-blue-700 text-white sm:bg-transparent sm:border-blue-700 sm:text-blue-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 sm:border-transparent sm:hover:bg-transparent'
             }`}
           >
             <Bookmark className="w-4 h-4" />
-            <span>Saved Reading List</span>
-            <span className="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">
+            <span className="sm:hidden">Saved</span>
+            <span className="hidden sm:inline">Saved Reading List</span>
+            <span className={`px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'saved' ? 'bg-white/20 text-white sm:bg-slate-100 sm:text-slate-700' : 'bg-slate-100 text-slate-700'
+            }`}>
               {currentUser.savedBookIds.length}
             </span>
           </button>
@@ -537,15 +558,18 @@ export const ProfilePage: React.FC = () => {
             id="tab-borrowed-books"
             type="button"
             onClick={() => setActiveTab('borrows')}
-            className={`pb-3 px-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+            className={`rounded-xl px-3 py-2 text-xs font-bold flex items-center gap-2 transition-all whitespace-nowrap sm:rounded-none sm:pb-3 sm:pt-0 sm:text-sm sm:border-b-2 ${
               activeTab === 'borrows'
-                ? 'border-blue-700 text-blue-700'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
+                ? 'bg-blue-700 text-white sm:bg-transparent sm:border-blue-700 sm:text-blue-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 sm:border-transparent sm:hover:bg-transparent'
             }`}
           >
             <Clock className="w-4 h-4" />
-            <span>Active & Past Loans</span>
-            <span className="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">
+            <span className="sm:hidden">Loans</span>
+            <span className="hidden sm:inline">Active & Past Loans</span>
+            <span className={`px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'borrows' ? 'bg-white/20 text-white sm:bg-slate-100 sm:text-slate-700' : 'bg-slate-100 text-slate-700'
+            }`}>
               {currentUser.borrowedBooks.length}
             </span>
           </button>
@@ -554,15 +578,17 @@ export const ProfilePage: React.FC = () => {
             id="tab-holds-books"
             type="button"
             onClick={() => setActiveTab('holds')}
-            className={`pb-3 px-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+            className={`rounded-xl px-3 py-2 text-xs font-bold flex items-center gap-2 transition-all whitespace-nowrap sm:rounded-none sm:pb-3 sm:pt-0 sm:text-sm sm:border-b-2 ${
               activeTab === 'holds'
-                ? 'border-blue-700 text-blue-700'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
+                ? 'bg-blue-700 text-white sm:bg-transparent sm:border-blue-700 sm:text-blue-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 sm:border-transparent sm:hover:bg-transparent'
             }`}
           >
             <BookmarkCheck className="w-4 h-4" />
             <span>Reservations</span>
-            <span className="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">
+            <span className={`px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'holds' ? 'bg-white/20 text-white sm:bg-slate-100 sm:text-slate-700' : 'bg-slate-100 text-slate-700'
+            }`}>
               {currentUser.reservations?.filter((r) => r.status === 'waiting' || r.status === 'ready').length || 0}
             </span>
           </button>
@@ -571,15 +597,18 @@ export const ProfilePage: React.FC = () => {
             id="tab-reading-history"
             type="button"
             onClick={() => setActiveTab('history')}
-            className={`pb-3 px-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+            className={`rounded-xl px-3 py-2 text-xs font-bold flex items-center gap-2 transition-all whitespace-nowrap sm:rounded-none sm:pb-3 sm:pt-0 sm:text-sm sm:border-b-2 ${
               activeTab === 'history'
-                ? 'border-blue-700 text-blue-700'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
+                ? 'bg-blue-700 text-white sm:bg-transparent sm:border-blue-700 sm:text-blue-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 sm:border-transparent sm:hover:bg-transparent'
             }`}
           >
             <BookOpen className="w-4 h-4" />
-            <span>Digital Reading History</span>
-            <span className="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">
+            <span className="sm:hidden">History</span>
+            <span className="hidden sm:inline">Digital Reading History</span>
+            <span className={`px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'history' ? 'bg-white/20 text-white sm:bg-slate-100 sm:text-slate-700' : 'bg-slate-100 text-slate-700'
+            }`}>
               {currentUser.readingHistory.length}
             </span>
           </button>
