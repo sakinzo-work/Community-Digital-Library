@@ -7,8 +7,11 @@ coverage/
 .env*
 !.env.example
 
-database/
+/database/
 uploads/
 backend/library.db
 backend/src/library.db
+backend/src/database/*.db
+backend/src/database/*.sqlite
+backend/src/database/*.sqlite3
 migration-temp/
