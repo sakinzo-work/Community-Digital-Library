@@ -73,12 +73,14 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50/50 text-slate-900 font-sans antialiased selection:bg-blue-100 selection:text-blue-900">
+    <div className="min-h-screen flex flex-col bg-slate-100 md:bg-slate-50/50 text-slate-900 font-sans antialiased selection:bg-blue-100 selection:text-blue-900">
       <Navbar />
-      <main className="flex-1 pb-24 md:pb-0">
+      <main className="flex-1 pb-[calc(6.5rem+env(safe-area-inset-bottom))] md:pb-0">
         {CurrentPage}
       </main>
-      <Footer />
+      <div className="hidden md:block">
+        <Footer />
+      </div>
       <BottomNav />
     </div>
   );

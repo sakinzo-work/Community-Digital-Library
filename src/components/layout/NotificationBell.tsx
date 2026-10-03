@@ -129,7 +129,7 @@ export const NotificationBell: React.FC = () => {
       {isOpen && (
         <div
           id="notification-dropdown-panel"
-          className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl border border-slate-200 shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+          className="fixed inset-x-3 top-16 w-auto bg-white rounded-2xl border border-slate-200 shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100 sm:absolute sm:inset-x-auto sm:top-auto sm:right-0 sm:mt-2 sm:w-96"
         >
           {/* Header */}
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">

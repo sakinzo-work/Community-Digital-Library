@@ -53,24 +53,24 @@ export const Navbar: React.FC = () => {
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16 sm:h-20">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-14 sm:h-20">
           {/* Logo and Brand */}
           <div
             id="brand-logo"
             onClick={() => handleNav('/')}
-            className="flex items-center gap-3 cursor-pointer select-none group"
+            className="flex items-center gap-2.5 sm:gap-3 cursor-pointer select-none group min-w-0"
           >
-            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-blue-700 text-white flex items-center justify-center shadow-sm group-hover:bg-blue-800 transition-colors">
+            <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-blue-700 text-white flex items-center justify-center shadow-sm group-hover:bg-blue-800 transition-colors shrink-0">
               <Library className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="font-serif font-bold text-slate-900 text-base sm:text-lg tracking-tight leading-none group-hover:text-blue-700 transition-colors">
+                <span className="block max-w-[154px] truncate font-serif font-bold text-slate-900 text-sm sm:max-w-none sm:text-lg tracking-tight leading-none group-hover:text-blue-700 transition-colors">
                   Community Digital Library
                 </span>
               </div>
-              <p className="text-[11px] sm:text-xs text-slate-500 font-medium tracking-wide mt-0.5">
+              <p className="hidden sm:block text-xs text-slate-500 font-medium tracking-wide mt-0.5">
                 Knowledge for Everyone
               </p>
             </div>
@@ -217,23 +217,13 @@ export const Navbar: React.FC = () => {
           </nav>
 
           {/* Mobile Menu Button */}
-          <div className="flex items-center md:hidden gap-1.5">
+          <div className="flex items-center md:hidden gap-1">
             <NotificationBell />
-            {currentUser && (
-              <button
-                type="button"
-                onClick={() => handleNav('/profile')}
-                className="w-8 h-8 rounded-lg bg-blue-700 text-white flex items-center justify-center font-bold text-xs"
-                title="View Profile"
-              >
-                {currentUser.name.charAt(0)}
-              </button>
-            )}
             <button
               id="mobile-search-button"
               type="button"
               onClick={() => handleNav('/books')}
-              className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg"
+              className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl"
               aria-label="Search Catalogue"
             >
               <Search className="w-5 h-5" />
@@ -242,7 +232,7 @@ export const Navbar: React.FC = () => {
               id="mobile-menu-toggle"
               type="button"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 text-slate-700 hover:text-slate-950 hover:bg-slate-100 rounded-lg focus:outline-hidden"
+              className="p-2 text-slate-700 hover:text-slate-950 hover:bg-slate-100 rounded-xl focus:outline-hidden"
               aria-label="Toggle Navigation Menu"
             >
               {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
@@ -253,7 +243,19 @@ export const Navbar: React.FC = () => {
 
       {/* Mobile Collapsed Navigation Menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden border-b border-slate-200 bg-white px-4 pt-2 pb-4 space-y-1 shadow-lg animate-in slide-in-from-top-2 duration-150">
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-30 bg-slate-950/25 md:hidden"
+            aria-label="Close navigation menu"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div className="fixed inset-x-3 top-16 z-50 md:hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl animate-in slide-in-from-top-2 duration-150">
+            <div className="px-1 pb-3 border-b border-slate-100">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Menu</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900">Community Digital Library</p>
+            </div>
+            <div className="pt-3 space-y-1">
           {navLinks.map((link) => {
             const active = isActive(link.to);
             return (
@@ -262,7 +264,7 @@ export const Navbar: React.FC = () => {
                 id={`mobile-nav-${link.label.toLowerCase()}`}
                 type="button"
                 onClick={() => handleNav(link.to)}
-                className={`w-full text-left px-3.5 py-2.5 rounded-lg text-sm font-medium flex items-center justify-between ${
+                className={`w-full text-left px-3.5 py-3 rounded-xl text-sm font-medium flex items-center justify-between ${
                   active
                     ? 'bg-blue-50 text-blue-700 font-semibold'
                     : 'text-slate-700 hover:bg-slate-50'
@@ -273,9 +275,10 @@ export const Navbar: React.FC = () => {
               </button>
             );
           })}
+            </div>
 
           {/* Mobile Auth Buttons */}
-          <div className="pt-3 border-t border-slate-100 space-y-2">
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
             {currentUser ? (
               <>
                 {currentUser.role === 'admin' && (
@@ -313,7 +316,7 @@ export const Navbar: React.FC = () => {
                     setMobileMenuOpen(false);
                     handleNav('/');
                   }}
-                  className="w-full text-left px-3.5 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg flex items-center gap-2"
+                  className="w-full text-left px-3.5 py-2.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-xl flex items-center gap-2"
                 >
                   <LogOut className="w-4 h-4" />
                   <span>Sign Out ({currentUser.name})</span>
@@ -338,9 +341,9 @@ export const Navbar: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
+          </div>
+        </>
       )}
     </header>
   );
 };
-

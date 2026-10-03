@@ -53,10 +53,10 @@ export const BottomNav: React.FC = () => {
 
   return (
     <nav
-      className="md:hidden fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 backdrop-blur-xl shadow-[0_-12px_32px_rgba(15,23,42,0.12)]"
+      className="md:hidden fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-50 px-2"
       aria-label="Primary mobile navigation"
     >
-      <div className="grid grid-cols-4 gap-1 px-2 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.45rem)]">
+      <div className="mx-auto grid max-w-md grid-cols-4 gap-1 rounded-2xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_18px_42px_rgba(15,23,42,0.22)] backdrop-blur-xl">
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = isActive(item.to);
@@ -66,10 +66,10 @@ export const BottomNav: React.FC = () => {
               key={item.to}
               type="button"
               onClick={() => navigate(item.to)}
-              className={`min-h-14 rounded-lg flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors ${
+              className={`min-h-[58px] rounded-xl flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-all ${
                 active
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                  ? 'bg-blue-700 text-white shadow-sm'
+                  : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
               }`}
               aria-current={active ? 'page' : undefined}
             >
